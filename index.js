@@ -85,6 +85,17 @@ async function discordApi(method, path, body) {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+function mindsetLabel(id) {
+  const labels = {
+    sysadmin: "Sysadmin",
+    "design-engineer": "Design Engineer",
+    pa: "PA",
+    wordware: "Wordware",
+    main: "Main",
+  };
+  return labels[id] || id;
+}
+
 function timeAgo(ts) {
   if (!ts) return "unknown";
   const mins = Math.round((Date.now() - ts) / 60000);
@@ -948,11 +959,28 @@ export default {
         const humanId = getHumanId();
         const mention = humanId ? `<@${humanId}>` : "";
 
-        // Create thread
+        // Create thread with styled delegation header
         let threadId;
         try {
-          const thread = await discordApi("POST", `/channels/${forumId}/threads`, { name: title, message: { content: `${mention} ${brief}` } });
+          const thread = await discordApi("POST", `/channels/${forumId}/threads`, {
+            name: title,
+            message: { content: `${mention} ${brief}` },
+          });
           threadId = thread.id;
+
+          // Post styled delegation card
+          const color = parseInt("5865F2", 16); // blurple
+          await discordApi("POST", `/channels/${threadId}/messages`, {
+            components: [{
+              type: 17, accent_color: color,
+              components: [
+                { type: 10, content: `📋 → **${mindsetLabel(mindset)}**` },
+                { type: 14 }, // separator
+                { type: 10, content: brief },
+              ],
+            }],
+            flags: 32768,
+          }).catch(() => {}); // non-critical
         } catch (e) {
           return ok({ ok: false, error: e.message });
         }
@@ -1032,9 +1060,35 @@ export default {
         required: ["sessionKey"],
       },
       async execute(_id, params) {
+        const msg = params.message || "Check in — what's your status on this?";
+        const sessionKey = params.sessionKey;
+
+        // Extract threadId from sessionKey (agent:X:discord:channel:THREADID)
+        const threadId = sessionKey.split("discord:channel:")[1]?.split(":")[0];
+        const agentId = sessionKey.split(":")[1];
+
+        // Post visible styled message in thread
+        if (threadId) {
+          try {
+            const color = parseInt("5865F2", 16);
+            await discordApi("POST", `/channels/${threadId}/messages`, {
+              components: [{
+                type: 17, accent_color: color,
+                components: [
+                  { type: 10, content: `👋 → **${mindsetLabel(agentId)}**` },
+                  { type: 14 },
+                  { type: 10, content: msg },
+                ],
+              }],
+              flags: 32768,
+            });
+          } catch {} // non-critical
+        }
+
+        // Wake session with same message
         try {
-          const result = await wakeSession(params.sessionKey, params.message || "Check in — what's your status on this?", true, 0);
-          return ok({ ok: true, sessionKey: params.sessionKey, runId: result.runId });
+          const result = await wakeSession(sessionKey, msg, true, 0);
+          return ok({ ok: true, sessionKey, runId: result.runId });
         } catch (e) {
           return ok({ ok: false, error: e.message });
         }
