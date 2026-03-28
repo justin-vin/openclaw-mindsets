@@ -1,0 +1,9 @@
+{
+  "name": "openclaw-mindsets",
+  "version": "0.1.0",
+  "description": "Multiple AI mindsets, one identity.",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}
