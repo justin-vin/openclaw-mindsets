@@ -512,52 +512,6 @@ async function invokeToolAsSession(sessionKey, toolName, args) {
 }
 
 // ── Runtime-dependent functions (set in register()) ────────────────
-
-let _runtime = null;
-
-async function wakeSession(rt, sessionKey, message, deliver = true, timeoutMs = 60000) {
-  const { runId } = await rt.subagent.run({
-    sessionKey, message, deliver, idempotencyKey: crypto.randomUUID(),
-  });
-  if (timeoutMs === 0) return { ok: true, runId, sessionKey, status: "accepted", timestamp: new Date().toISOString() };
-
-  try {
-    const result = await rt.subagent.waitForRun({ runId, timeoutMs });
-    return {
-      ok: true, runId, sessionKey,
-      status: result?.status || "unknown",
-      hasReply: !!result?.reply,
-      replyPreview: result?.reply?.substring(0, 500),
-      timestamp: new Date().toISOString(),
-    };
-  } catch (e) {
-    return { ok: true, runId, sessionKey, status: "timeout", error: e.message, timestamp: new Date().toISOString() };
-  }
-}
-
-async function silentQuery(rt, sessionKey, message, timeoutMs = 60000) {
-  const { runId } = await rt.subagent.run({
-    sessionKey, message, deliver: false, idempotencyKey: crypto.randomUUID(),
-  });
-  try {
-    const result = await rt.subagent.waitForRun({ runId, timeoutMs });
-    let reply = result?.reply || null;
-    if (!reply) {
-      try {
-        const { messages } = await rt.subagent.getSessionMessages({ sessionKey, limit: 3 });
-        const last = [...(messages || [])].reverse().find(m => m.role === "assistant");
-        if (last?.content) {
-          reply = typeof last.content === "string" ? last.content :
-            Array.isArray(last.content) ? last.content.filter(c => c.type === "text").map(c => c.text).join("\n") : null;
-        }
-      } catch {}
-    }
-    return { ok: true, sessionKey, runId, status: result?.status || "unknown", reply: reply || "(no reply)" };
-  } catch (e) {
-    return { ok: true, sessionKey, runId, status: "timeout", error: e.message };
-  }
-}
-
 // ── Board scan — shared by _ms_board and board ─────────────────────
 
 async function scanBoard(mindset, statusFilter = "all") {
@@ -688,188 +642,59 @@ export default {
   name: "OpenClaw Mindsets",
   description: "Multiple AI mindsets, one identity.",
   register(api) {
-    _runtime = api.runtime;
+    const runtime = api.runtime;
     const logger = api.logger;
     logger.info("openclaw-mindsets: registering");
+
+    // Runtime-dependent shared functions (must be inside register() for request scope)
+    async function wakeSession(sessionKey, message, deliver = true, timeoutMs = 60000) {
+      const { runId } = await runtime.subagent.run({
+        sessionKey, message, deliver, idempotencyKey: crypto.randomUUID(),
+      });
+      if (timeoutMs === 0) return { ok: true, runId, sessionKey, status: "accepted" };
+      try {
+        const result = await runtime.subagent.waitForRun({ runId, timeoutMs });
+        return { ok: true, runId, sessionKey, status: result?.status || "unknown", hasReply: !!result?.reply, replyPreview: result?.reply?.substring(0, 500) };
+      } catch (e) {
+        return { ok: true, runId, sessionKey, status: "timeout", error: e.message };
+      }
+    }
+
+    async function silentQuery(sessionKey, message, timeoutMs = 60000) {
+      const { runId } = await runtime.subagent.run({
+        sessionKey, message, deliver: false, idempotencyKey: crypto.randomUUID(),
+      });
+      try {
+        const result = await runtime.subagent.waitForRun({ runId, timeoutMs });
+        let reply = result?.reply || null;
+        if (!reply) {
+          try {
+            const { messages } = await runtime.subagent.getSessionMessages({ sessionKey, limit: 3 });
+            const last = [...(messages || [])].reverse().find(m => m.role === "assistant");
+            if (last?.content) {
+              reply = typeof last.content === "string" ? last.content :
+                Array.isArray(last.content) ? last.content.filter(c => c.type === "text").map(c => c.text).join("\n") : null;
+            }
+          } catch {}
+        }
+        return { ok: true, sessionKey, runId, status: result?.status || "unknown", reply: reply || "(no reply)" };
+      } catch (e) {
+        return { ok: true, sessionKey, runId, status: "timeout", error: e.message };
+      }
+    }
 
     // ╔══════════════════════════════════════════════════════════════╗
     // ║  L1: Debug tools (_ms_*) — thin wrappers                   ║
     // ╚══════════════════════════════════════════════════════════════╝
 
-    api.registerTool({
-      name: "_ms_list_agents",
-      description: "[debug] List all agent IDs on disk with session counts.",
-      parameters: { type: "object", properties: {} },
-      async execute(_id) {
-        const fb = getForumBindings();
-        const agents = listAgentIds().map(id => {
-          const store = readStore(id);
-          const keys = Object.keys(store);
-          const byKind = {};
-          for (const k of keys) byKind[classifySession(k)] = (byKind[classifySession(k)] || 0) + 1;
-          return {
-            id, forumChannelId: fb[id] || null,
-            totalSessions: keys.length,
-            activeSessions: keys.filter(k => { const s = store[k].status; return s === "running" || s === "idle"; }).length,
-            byKind,
-          };
-        });
-        return ok({ agents, timestamp: new Date().toISOString() });
-      },
-    });
+
+
+
+
 
     api.registerTool({
-      name: "_ms_read_store",
-      description: "[debug] Read session store for one agent. Filter by channel type.",
-      parameters: {
-        type: "object",
-        properties: {
-          agentId: { type: "string", description: "Agent ID (e.g. 'sysadmin')" },
-          filter: { type: "string", description: "Filter: 'all', 'discord', 'active'. Default: 'discord'" },
-        },
-        required: ["agentId"],
-      },
-      async execute(_id, params) {
-        const { agentId, filter = "discord" } = params;
-        const store = readStore(agentId);
-        const entries = Object.entries(store);
-
-        let filtered;
-        if (filter === "all") filtered = entries;
-        else if (filter === "active") filtered = entries.filter(([, v]) => v.status === "running" || v.status === "idle");
-        else filtered = entries.filter(([k]) => k.includes("discord"));
-
-        const sessions = filtered.map(([key, v]) => formatSession(key, v, agentId));
-        sessions.sort((a, b) => {
-          if (a.status === "running" && b.status !== "running") return -1;
-          if (b.status === "running" && a.status !== "running") return 1;
-          return (b.updatedAt || 0) - (a.updatedAt || 0);
-        });
-
-        const flagged = sessions.filter(s => s.flags?.length > 0);
-        const summary = {
-          total: sessions.length,
-          running: sessions.filter(s => s.status === "running").length,
-          done: sessions.filter(s => s.status === "done").length,
-          idle: sessions.filter(s => s.status === "idle").length,
-          unknown: sessions.filter(s => s.status === "unknown").length,
-          flagged: flagged.length,
-          flags: flagged.length > 0 ? Object.fromEntries(
-            [...new Set(flagged.flatMap(s => s.flags || []))].map(f => [f, flagged.filter(s => s.flags?.includes(f)).length])
-          ) : {},
-        };
-        return ok({ agentId, filter, summary, sessions, timestamp: new Date().toISOString() });
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_get_session",
-      description: "[debug] Get full session metadata by key. Searches all agents if agentId not specified.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Full session key (e.g. 'agent:sysadmin:discord:channel:12345')" },
-          agentId: { type: "string", description: "Agent ID to search. If omitted, searches all agents." },
-        },
-        required: ["sessionKey"],
-      },
-      async execute(_id, params) {
-        const { sessionKey, agentId } = params;
-        const found = findSession(sessionKey, agentId);
-        if (!found) return ok({ found: false, sessionKey, searchedAgents: agentId ? [agentId] : listAgentIds() });
-
-        const { agentId: aid, entry: v } = found;
-        const tb = loadThreadBindings();
-        const threadId = threadIdFromKey(sessionKey);
-        const isFocused = threadId ? !!tb.bindings?.[threadId] : false;
-        const focusTarget = threadId ? (tb.bindings?.[threadId]?.sessionKey || null) : null;
-
-        return ok({
-          found: true, agentId: aid, sessionKey,
-          kind: classifySession(sessionKey),
-          sessionId: v.sessionId, status: v.status || "unknown",
-          deliveryContext: v.deliveryContext || null,
-          hasDiscordDelivery: v.deliveryContext?.channel === "discord" && !!v.deliveryContext?.to,
-          channel: v.channel, chatType: v.chatType,
-          threadId: threadId || null, isFocused, focusTarget,
-          totalTokens: v.totalTokens || 0, inputTokens: v.inputTokens || 0,
-          outputTokens: v.outputTokens || 0, cacheRead: v.cacheRead || 0,
-          estimatedCostUsd: v.estimatedCostUsd || 0,
-          model: v.model, modelProvider: v.modelProvider,
-          updatedAt: v.updatedAt, updatedAgo: timeAgo(v.updatedAt),
-          startedAt: v.startedAt, endedAt: v.endedAt, runtimeMs: v.runtimeMs,
-          compactionCount: v.compactionCount || 0, abortedLastRun: v.abortedLastRun || false,
-          spawnedBy: v.spawnedBy || null, subagentRole: v.subagentRole || null,
-          spawnDepth: v.spawnDepth || null, label: v.label || null,
-          origin: v.origin || null, lastChannel: v.lastChannel, lastTo: v.lastTo,
-          sessionFile: v.sessionFile,
-          skillsSnapshot: v.skillsSnapshot ? (typeof v.skillsSnapshot === "object" && !Array.isArray(v.skillsSnapshot) ? Object.keys(v.skillsSnapshot) : v.skillsSnapshot) : [],
-        });
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_list_bindings",
-      description: "[debug] List all forum↔agent bindings from OpenClaw config.",
-      parameters: { type: "object", properties: {} },
-      async execute(_id) {
-        const config = loadConfig();
-        const bindings = (config.bindings || [])
-          .filter(b => b.match?.peer?.kind === "channel")
-          .map(b => ({ agentId: b.agentId, forumChannelId: b.match.peer.id, channel: b.match.channel }));
-
-        const tb = loadThreadBindings();
-        const threadBindings = Object.entries(tb.bindings || {}).map(([threadId, binding]) => ({ threadId, ...binding }));
-
-        const guilds = config.channels?.discord?.guilds || {};
-        const guildInfo = Object.entries(guilds).map(([guildId, g]) => ({
-          guildId, requireMention: g.requireMention, users: g.users,
-          channelCount: Object.keys(g.channels || {}).length,
-          channels: Object.entries(g.channels || {}).map(([chId, ch]) => ({
-            id: chId, allow: ch.allow, includeThreadStarter: ch.includeThreadStarter,
-          })),
-        }));
-
-        return ok({ forumBindings: bindings, threadBindings, threadBindingsVersion: tb.version, guilds: guildInfo, timestamp: new Date().toISOString() });
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_find_thread_sessions",
-      description: "[debug] Find all sessions across all agents that match a Discord thread ID.",
-      parameters: {
-        type: "object",
-        properties: { threadId: { type: "string", description: "Discord thread ID to search for" } },
-        required: ["threadId"],
-      },
-      async execute(_id, params) {
-        const { threadId } = params;
-        const matches = findSessionsForThread(threadId).map(m => formatSession(m.key, m, m.agentId));
-
-        const tb = loadThreadBindings();
-        const fb = getForumBindings();
-        const isForumChannel = !!fb[`forum:${threadId}`];
-
-        const anomalies = [];
-        const agentSet = new Set(matches.map(m => m.agent));
-        if (agentSet.size > 1) anomalies.push(`multi-agent: sessions in ${[...agentSet].join(", ")}`);
-        const webchat = matches.filter(m => m.deliveryContext?.channel === "webchat");
-        if (webchat.length) anomalies.push(`webchat-delivery: ${webchat.length} session(s) with webchat instead of discord`);
-        const noDelivery = matches.filter(m => !m.hasDiscordDelivery);
-        if (noDelivery.length) anomalies.push(`no-discord-delivery: ${noDelivery.length} session(s) missing discord delivery`);
-
-        return ok({
-          threadId, isForumChannel, forumAgent: isForumChannel ? fb[`forum:${threadId}`] : null,
-          matchCount: matches.length, anomalies: anomalies.length > 0 ? anomalies : null,
-          sessions: matches, focused: tb.bindings?.[threadId] ? { ...tb.bindings[threadId] } : null,
-          timestamp: new Date().toISOString(),
-        });
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_health",
-      description: "[debug] Cross-agent health check. Shows zombies, orphans, broken delivery, missing transcripts, cost summary.",
+      name: "health",
+      description: "System health. Zombies, orphans, conflicts, costs across all mindsets. Call on heartbeat.",
       parameters: { type: "object", properties: {} },
       async execute(_id) {
         const fb = getForumBindings();
@@ -929,448 +754,36 @@ export default {
           forumBindings: Object.entries(fb).filter(([k]) => !k.startsWith("forum:")).map(([agent, forum]) => ({ agent, forum })),
         });
       },
-    });
+    }, { optional: true });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     api.registerTool({
-      name: "_ms_transcript",
-      description: "[debug] Read last N messages from a session's transcript file. Shows what the agent actually said.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Session key to read transcript for" },
-          limit: { type: "number", description: "Max messages to return (default 10, max 50)" },
-          agentId: { type: "string", description: "Agent ID. If omitted, searches all agents." },
-        },
-        required: ["sessionKey"],
-      },
-      async execute(_id, params) {
-        return ok(readTranscript(params.sessionKey, params.limit, params.agentId));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_kill_session",
-      description: "[debug] Kill a session: set status to 'done', optionally delete from store.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Session key to kill" },
-          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
-          deleteFromStore: { type: "boolean", description: "If true, remove entry entirely. Default: false (just marks done)." },
-        },
-        required: ["sessionKey"],
-      },
-      async execute(_id, params) {
-        return ok(killSession(params.sessionKey, params.agentId, params.deleteFromStore));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_link_session",
-      description: "[debug] Link a session to a Discord thread by patching deliveryContext.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Session key to link" },
-          threadId: { type: "string", description: "Discord thread ID to link to" },
-          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
-        },
-        required: ["sessionKey", "threadId"],
-      },
-      async execute(_id, params) {
-        return ok(linkSession(params.sessionKey, params.threadId, params.agentId));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_unlink_session",
-      description: "[debug] Unlink a session from its Discord thread. Clears deliveryContext.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Session key to unlink" },
-          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
-        },
-        required: ["sessionKey"],
-      },
-      async execute(_id, params) {
-        return ok(unlinkSession(params.sessionKey, params.agentId));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_focus_thread",
-      description: "[debug] Focus a Discord thread — write thread binding so messages route to a specific session.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread ID to focus" },
-          sessionKey: { type: "string", description: "Session key to route to" },
-          agentId: { type: "string", description: "Agent ID that owns the session" },
-        },
-        required: ["threadId", "sessionKey"],
-      },
-      async execute(_id, params) {
-        return ok(focusThread(params.threadId, params.sessionKey, params.agentId));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_unfocus_thread",
-      description: "[debug] Unfocus a Discord thread — remove thread binding.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread ID to unfocus" },
-        },
-        required: ["threadId"],
-      },
-      async execute(_id, params) {
-        return ok(unfocusThread(params.threadId));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_wake_session",
-      description: "[debug] Send a message into a session via subagent.run. Creates session if needed.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Session key to wake" },
-          message: { type: "string", description: "Message to send to the session" },
-          deliver: { type: "boolean", description: "Whether to deliver reply to channel. Default: true" },
-          timeoutMs: { type: "number", description: "Wait timeout in ms. Default: 60000. 0 = fire and forget." },
-        },
-        required: ["sessionKey", "message"],
-      },
-      async execute(_id, params) {
-        const { sessionKey, message, deliver = true, timeoutMs = 60000 } = params;
-        logger.info(`wake_session: ${sessionKey}`);
-        try {
-          return ok(await wakeSession(_runtime, sessionKey, message, deliver, timeoutMs));
-        } catch (e) {
-          return ok({ ok: false, sessionKey, error: e.message, timestamp: new Date().toISOString() });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_bootstrap_session",
-      description: "[debug] Create a fresh session entry in an agent's store with Discord deliveryContext. Does NOT run the session.",
-      parameters: {
-        type: "object",
-        properties: {
-          agentId: { type: "string", description: "Agent ID to create session under" },
-          threadId: { type: "string", description: "Discord thread ID to bind to" },
-          sessionKey: { type: "string", description: "Custom session key. Default: agent:<agentId>:discord:channel:<threadId>" },
-        },
-        required: ["agentId", "threadId"],
-      },
-      async execute(_id, params) {
-        return ok(bootstrapSession(params.agentId, params.threadId, params.sessionKey));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_close_thread",
-      description: "[debug] Close a thread: archive + lock. Optionally rename and retag.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread ID" },
-          rename: { type: "string", description: "New name (optional). Tip: prefix with ✅ or ❌" },
-          tagId: { type: "string", description: "Tag ID to apply (optional)" },
-        },
-        required: ["threadId"],
-      },
-      async execute(_id, params) {
-        const { threadId, rename, tagId } = params;
-        try {
-          const patch = { archived: true, locked: true };
-          if (rename) patch.name = rename;
-          if (tagId) patch.applied_tags = [tagId];
-          const result = await patchThread(threadId, patch);
-          return ok({ ok: true, threadId, name: result.name, archived: result.thread_metadata?.archived, locked: result.thread_metadata?.locked, tags: result.applied_tags });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_open_thread",
-      description: "[debug] Reopen a thread: unarchive + unlock. Optionally rename and retag.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread ID" },
-          rename: { type: "string", description: "New name (optional). Tip: prefix with 🔄" },
-          tagId: { type: "string", description: "Tag ID to apply (optional)" },
-        },
-        required: ["threadId"],
-      },
-      async execute(_id, params) {
-        const { threadId, rename, tagId } = params;
-        try {
-          const patch = { archived: false, locked: false };
-          if (rename) patch.name = rename;
-          if (tagId) patch.applied_tags = [tagId];
-          const result = await patchThread(threadId, patch);
-          return ok({ ok: true, threadId, name: result.name, archived: result.thread_metadata?.archived, locked: result.thread_metadata?.locked, tags: result.applied_tags });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_get_thread",
-      description: "[debug] Get full thread state: Discord metadata + session store data combined.",
-      parameters: {
-        type: "object",
-        properties: { threadId: { type: "string", description: "Discord thread ID" } },
-        required: ["threadId"],
-      },
-      async execute(_id, params) {
-        const { threadId } = params;
-        try {
-          const ch = await getChannel(threadId);
-          const parentId = ch.parent_id;
-          let tagMap = {};
-          try { for (const t of await getForumTags(parentId)) tagMap[t.id] = t.name; } catch {}
-
-          const sessions = findSessionsForThread(threadId).map(m => formatSession(m.key, m, m.agentId));
-          const tb = loadThreadBindings();
-          const fb = getForumBindings();
-
-          return ok({
-            threadId, name: ch.name, parentId, parentName: null,
-            forumAgent: fb[`forum:${parentId}`] || null,
-            archived: ch.thread_metadata?.archived || false,
-            locked: ch.thread_metadata?.locked || false,
-            tags: (ch.applied_tags || []).map(id => ({ id, name: tagMap[id] || "unknown" })),
-            messageCount: ch.message_count || 0, memberCount: ch.member_count || 0,
-            createdAt: ch.thread_metadata?.create_timestamp,
-            autoArchiveDuration: ch.thread_metadata?.auto_archive_duration,
-            sessionCount: sessions.length, sessions,
-            focused: tb.bindings?.[threadId] || null,
-            timestamp: new Date().toISOString(),
-          });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_board",
-      description: "[debug] Full board view: all forums, all threads, all sessions. Filterable by mindset or status.",
-      parameters: {
-        type: "object",
-        properties: {
-          mindset: { type: "string", description: "Filter by agent/mindset ID (e.g. 'sysadmin'). Omit for all." },
-          status: { type: "string", description: "Filter: 'open' (not archived), 'closed' (archived), 'all'. Default: 'all'" },
-        },
-      },
-      async execute(_id, params) {
-        return ok(await scanBoard(params?.mindset, params?.status || "all"));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_post_to_thread",
-      description: "[debug] Post a message to a Discord thread. Supports plain text and mentions. Set status=true for a styled status block.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread ID" },
-          content: { type: "string", description: "Message text (markdown ok)" },
-          silent: { type: "boolean", description: "Suppress notification. Default: false" },
-          status: { type: "boolean", description: "Render as a styled status block (component container). Default: false" },
-          accentColor: { type: "string", description: "Hex color for status block. Default: '#5865F2' (blurple)" },
-        },
-        required: ["threadId", "content"],
-      },
-      async execute(_id, params) {
-        const { threadId, content, silent = false, status = false } = params;
-        try {
-          const msg = status ? await postStyledMessage(threadId, content) : await postPlainMessage(threadId, content, silent);
-          return ok({ ok: true, threadId, messageId: msg.id, rendered: status ? "status" : "plain" });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_post_components",
-      description: "[debug] Post a rich Discord components v2 message to a thread. Container with accent color, text blocks, section+button.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread ID" },
-          accentColor: { type: "string", description: "Container accent color hex (e.g. '#2ecc71')" },
-          blocks: {
-            type: "array",
-            description: "Array of block objects: {type:'text',text:'...'} or {type:'section',text:'...',buttonLabel:'...',buttonStyle:'success|danger|secondary|primary'}",
-          },
-        },
-        required: ["threadId", "blocks"],
-      },
-      async execute(_id, params) {
-        const { threadId, accentColor, blocks = [] } = params;
-        try {
-          const components = [];
-          for (const block of blocks) {
-            if (block.type === "text") {
-              components.push({ type: 10, content: block.text });
-            } else if (block.type === "section") {
-              const section = { type: 9, components: [{ type: 10, content: block.text }] };
-              if (block.buttonLabel) {
-                const styleMap = { primary: 1, secondary: 2, success: 3, danger: 4 };
-                section.accessory = { type: 2, style: styleMap[block.buttonStyle] || 2, label: block.buttonLabel, custom_id: `ms_btn_${threadId}_${Date.now()}` };
-              }
-              components.push(section);
-            } else if (block.type === "separator") {
-              components.push({ type: 14 });
-            }
-          }
-          const container = { type: 17, components };
-          if (accentColor) container.accent_color = parseInt(accentColor.replace("#", ""), 16);
-
-          const msg = await discordApi("POST", `/channels/${threadId}/messages`, { components: [container], flags: 32768 });
-          return ok({ ok: true, threadId, messageId: msg.id, componentCount: components.length });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_edit_message",
-      description: "[debug] Edit a message in a Discord thread.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread/channel ID" },
-          messageId: { type: "string", description: "Message ID to edit" },
-          content: { type: "string", description: "New message text" },
-        },
-        required: ["threadId", "messageId", "content"],
-      },
-      async execute(_id, params) {
-        try {
-          const msg = await discordApi("PATCH", `/channels/${params.threadId}/messages/${params.messageId}`, { content: params.content });
-          return ok({ ok: true, messageId: msg.id, edited: msg.edited_timestamp });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_delete_message",
-      description: "[debug] Delete a message from a Discord thread.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread/channel ID" },
-          messageId: { type: "string", description: "Message ID to delete" },
-        },
-        required: ["threadId", "messageId"],
-      },
-      async execute(_id, params) {
-        try {
-          await discordApi("DELETE", `/channels/${params.threadId}/messages/${params.messageId}`);
-          return ok({ ok: true, deleted: params.messageId });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_react",
-      description: "[debug] Add a reaction to a message in a Discord thread.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread/channel ID" },
-          messageId: { type: "string", description: "Message ID to react to" },
-          emoji: { type: "string", description: "Emoji (e.g. '✅', '👀', '🔥')" },
-        },
-        required: ["threadId", "messageId", "emoji"],
-      },
-      async execute(_id, params) {
-        try {
-          const encoded = encodeURIComponent(params.emoji);
-          await fetch(`https://discord.com/api/v10/channels/${params.threadId}/messages/${params.messageId}/reactions/${encoded}/@me`, {
-            method: "PUT", headers: { Authorization: `Bot ${getDiscordToken()}` },
-          });
-          return ok({ ok: true, messageId: params.messageId, emoji: params.emoji });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_read_thread",
-      description: "[debug] Read recent messages from a Discord thread.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread ID" },
-          limit: { type: "number", description: "Max messages (1-100, default 20)" },
-        },
-        required: ["threadId"],
-      },
-      async execute(_id, params) {
-        try {
-          const messages = await readThreadMessages(params.threadId, params.limit);
-          return ok({ threadId: params.threadId, count: messages.length, messages });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_patch_session",
-      description: "[debug] Patch arbitrary fields on a session entry. Use for model override, status, etc.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Session key to patch" },
-          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
-          patch: { type: "object", description: "Fields to merge into the session entry (e.g. {model: 'claude-sonnet-4-20250514', status: 'idle'})" },
-        },
-        required: ["sessionKey", "patch"],
-      },
-      async execute(_id, params) {
-        return ok(patchSessionFields(params.sessionKey, params.patch, params.agentId));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_reset_session",
-      description: "[debug] Reset a session: delete transcript file, reset token counts, keep deliveryContext and binding.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Session key to reset" },
-          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
-        },
-        required: ["sessionKey"],
-      },
-      async execute(_id, params) {
-        return ok(resetSession(params.sessionKey, params.agentId));
-      },
-    });
-
-    api.registerTool({
-      name: "_ms_thread_vs_session",
-      description: "[debug] Compare thread messages with session transcript side by side. Shows gaps, mismatches, and routing issues.",
+      name: "inspect",
+      description: "Deep inspection of one thread. Discord messages + session transcript + routing state side by side. For diagnosing problems.",
       parameters: {
         type: "object",
         properties: {
@@ -1411,159 +824,22 @@ export default {
 
         return ok({ threadId, analysis, thread: { count: threadMessages.length, messages: threadMessages }, sessions: sessionTranscripts, timestamp: new Date().toISOString() });
       },
-    });
+    }, { optional: true });
 
-    api.registerTool({
-      name: "_ms_read_agent_workspace",
-      description: "[debug] Read a file from an agent's workspace directory. Use to inspect SOUL.md, IDENTITY.md, skills.",
-      parameters: {
-        type: "object",
-        properties: {
-          agentId: { type: "string", description: "Agent ID" },
-          file: { type: "string", description: "Relative path within workspace (e.g. 'SOUL.md', 'IDENTITY.md'). Default: 'SOUL.md'" },
-          maxLines: { type: "number", description: "Max lines to return. Default: 30." },
-        },
-        required: ["agentId"],
-      },
-      async execute(_id, params) {
-        const { agentId, file = "SOUL.md", maxLines = 30 } = params;
-        const config = loadConfig();
-        const agentConfig = (config.agents?.list || []).find(a => a?.id === agentId);
-        const paths = [
-          ...(agentConfig?.workspace ? [join(agentConfig.workspace, file)] : []),
-          join(OPENCLAW_HOME, `workspace-${agentId}`, file),
-          join(AGENTS_DIR, agentId, "workspace", file),
-          join(AGENTS_DIR, agentId, "agent", "workspace", file),
-          join(OPENCLAW_HOME, "workspace", file),
-        ];
-        for (const p of paths) {
-          try {
-            const content = readFileSync(p, "utf-8");
-            const lines = content.split("\n").slice(0, maxLines);
-            return ok({ ok: true, agentId, file, path: p, lines: lines.length, content: lines.join("\n") });
-          } catch {}
-        }
-        return ok({ ok: false, agentId, file, error: "File not found in any workspace path" });
-      },
-    });
 
     // ╔══════════════════════════════════════════════════════════════╗
     // ║  L2: Composed operations (ms_*) — thin wrappers            ║
     // ╚══════════════════════════════════════════════════════════════╝
 
-    api.registerTool({
-      name: "mindset_ping",
-      description: "Test tool — confirms the openclaw-mindsets extension is loaded.",
-      parameters: { type: "object", properties: {} },
-      async execute(_id) {
-        return ok({ ok: true, extension: "openclaw-mindsets", version: "0.1.0", timestamp: new Date().toISOString() });
-      },
-    });
+
+
+
+
+
 
     api.registerTool({
-      name: "ms_post_as",
-      description: "Invoke a tool as a specific session via Gateway API. For posting interactive components owned by a mindset session, or any cross-session tool call.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Target session key (e.g. 'agent:sysadmin:discord:channel:12345')" },
-          tool: { type: "string", description: "Tool name to invoke (e.g. 'message')" },
-          args: { type: "object", description: "Tool arguments" },
-        },
-        required: ["sessionKey", "tool", "args"],
-      },
-      async execute(_id, params) {
-        try {
-          const result = await invokeToolAsSession(params.sessionKey, params.tool, params.args);
-          return ok({ ok: true, sessionKey: params.sessionKey, tool: params.tool, result: result?.result || result });
-        } catch (e) {
-          return ok({ ok: false, sessionKey: params.sessionKey, tool: params.tool, error: e.message });
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "ms_ensure_session",
-      description: "Idempotent: ensure a thread has a working session with correct deliveryContext. Creates if missing, patches if wrong.",
-      parameters: {
-        type: "object",
-        properties: {
-          agentId: { type: "string", description: "Agent ID that should own the session" },
-          threadId: { type: "string", description: "Discord thread ID" },
-        },
-        required: ["agentId", "threadId"],
-      },
-      async execute(_id, params) {
-        return ok({ ok: true, ...ensureSession(params.agentId, params.threadId) });
-      },
-    });
-
-    api.registerTool({
-      name: "ms_ensure_closed",
-      description: "Idempotent: ensure a thread is fully closed (archived+locked) and its session is killed.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Discord thread ID" },
-          tagId: { type: "string", description: "Optional tag to apply (e.g. Done or Canceled tag ID)" },
-        },
-        required: ["threadId"],
-      },
-      async execute(_id, params) {
-        return ok({ ok: true, ...(await ensureClosed(params.threadId, params.tagId)) });
-      },
-    });
-
-    api.registerTool({
-      name: "ms_diff",
-      description: "Find orphans: threads without sessions and sessions without threads. Checks all forums.",
-      parameters: {
-        type: "object",
-        properties: { mindset: { type: "string", description: "Filter by agent ID. Omit for all." } },
-      },
-      async execute(_id, params) {
-        const { mindset } = params || {};
-        const guildId = getGuildId();
-        if (!guildId) return ok({ ok: false, error: "No guild configured" });
-
-        const bindings = getConfigBindings(mindset);
-        const orphanThreads = [], orphanSessions = [];
-
-        for (const binding of bindings) {
-          const forumId = binding.match.peer.id;
-          const agentId = binding.agentId;
-          const threadIds = new Set();
-          try {
-            const { active, archived } = await listForumThreads(guildId, forumId);
-            for (const t of [...active, ...archived]) {
-              threadIds.add(t.id);
-              if (!t.thread_metadata?.archived) {
-                const store = readStore(agentId);
-                if (!store[sessionKeyFor(agentId, t.id)]) {
-                  orphanThreads.push({ agentId, threadId: t.id, name: t.name, messageCount: t.message_count || 0 });
-                }
-              }
-            }
-          } catch { continue; }
-
-          const store = readStore(agentId);
-          for (const [key, v] of Object.entries(store)) {
-            if (!key.includes("discord:channel:")) continue;
-            const tid = threadIdFromKey(key);
-            if (!tid || tid === forumId) continue;
-            if (v.deliveryContext?.threadId && !threadIds.has(v.deliveryContext.threadId)) {
-              orphanSessions.push({ agentId, key, threadId: v.deliveryContext.threadId, status: v.status, totalTokens: v.totalTokens || 0 });
-            }
-          }
-        }
-
-        return ok({ ok: true, orphanThreads: { count: orphanThreads.length, items: orphanThreads }, orphanSessions: { count: orphanSessions.length, items: orphanSessions }, timestamp: new Date().toISOString() });
-      },
-    });
-
-    api.registerTool({
-      name: "ms_recover",
-      description: "Find zombie/aborted sessions across all agents. Optionally re-wake them. For restart recovery.",
+      name: "recover",
+      description: "Restart recovery. Find sessions that died mid-turn and re-wake them. Dry run by default.",
       parameters: {
         type: "object",
         properties: {
@@ -1603,7 +879,7 @@ export default {
           for (const c of candidates) {
             if (!c.hasDelivery) { wakeResults.push({ key: c.key, skipped: true, reason: "no discord delivery context" }); continue; }
             try {
-              const r = await wakeSession(_runtime, c.key, "You were interrupted by a gateway restart. Review your last conversation and continue where you left off. If you were waiting for input, say so.", true, 0);
+              const r = await wakeSession(c.key, "You were interrupted by a gateway restart. Review your last conversation and continue where you left off. If you were waiting for input, say so.", true, 0);
               wakeResults.push({ key: c.key, ok: true, runId: r.runId });
             } catch (e) {
               wakeResults.push({ key: c.key, ok: false, error: e.message });
@@ -1613,257 +889,19 @@ export default {
 
         return ok({ ok: true, dryRun: !wake, candidateCount: candidates.length, candidates, ...(wake ? { wakeResults } : {}), timestamp: new Date().toISOString() });
       },
-    });
+    }, { optional: true });
 
     // ╔══════════════════════════════════════════════════════════════╗
     // ║  L3: Coordination primitives (ms3_*)                       ║
     // ╚══════════════════════════════════════════════════════════════╝
 
-    api.registerTool({
-      name: "ms3_create_thread_session",
-      description: "Atomic: create a Discord forum thread with a bootstrapped session. Returns thread ID, session key, and posted message ID.",
-      parameters: {
-        type: "object",
-        properties: {
-          forumId: { type: "string", description: "Forum channel ID to create thread in" },
-          agentId: { type: "string", description: "Agent ID to own the session" },
-          threadName: { type: "string", description: "Thread name" },
-          message: { type: "string", description: "Initial message to post in thread" },
-          tagId: { type: "string", description: "Optional tag to apply" },
-        },
-        required: ["forumId", "agentId", "threadName", "message"],
-      },
-      async execute(_id, params) {
-        const { forumId, agentId, threadName, message, tagId } = params;
-        const result = { steps: {}, timestamp: new Date().toISOString() };
 
-        // Step 1: Create thread
-        let threadId;
-        try {
-          const body = { name: threadName, message: { content: message } };
-          if (tagId) body.applied_tags = [tagId];
-          const thread = await discordApi("POST", `/channels/${forumId}/threads`, body);
-          threadId = thread.id;
-          result.threadId = threadId;
-          result.steps.thread = { ok: true, id: threadId };
-        } catch (e) {
-          result.steps.thread = { ok: false, error: e.message };
-          return ok({ ok: false, ...result });
-        }
 
-        // Step 2: Bootstrap session via shared function
-        try {
-          const sessionResult = ensureSession(agentId, threadId);
-          result.sessionKey = sessionResult.sessionKey;
-          result.steps.session = { ok: true, key: sessionResult.sessionKey, action: sessionResult.action };
-        } catch (e) {
-          try { await patchThread(threadId, { archived: true, locked: true }); } catch {}
-          result.steps.session = { ok: false, error: e.message };
-          return ok({ ok: false, ...result });
-        }
 
-        return ok({ ok: true, ...result });
-      },
-    });
 
-    api.registerTool({
-      name: "ms3_gate",
-      description: "Post an interactive gate (buttons/select) to a thread as a session. Click routes to session. Returns message ID.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Session to own the interaction" },
-          threadId: { type: "string", description: "Thread to post in" },
-          text: { type: "string", description: "Gate prompt text" },
-          buttons: { type: "array", description: "Array of {label, style, value?} objects. Styles: primary, secondary, success, danger." },
-          allowedUsers: { type: "array", description: "Discord user IDs who can interact. Omit for anyone." },
-          reusable: { type: "boolean", description: "Allow multiple clicks. Default: false." },
-        },
-        required: ["sessionKey", "threadId", "text", "buttons"],
-      },
-      async execute(_id, params) {
-        const { sessionKey, threadId, text, buttons, allowedUsers, reusable = false } = params;
-        try {
-          const componentButtons = buttons.map(b => ({
-            label: b.label, style: b.style || "primary",
-            ...(allowedUsers ? { allowedUsers } : {}),
-          }));
-          const result = await invokeToolAsSession(sessionKey, "message", {
-            action: "send", channel: "discord", target: `channel:${threadId}`,
-            components: { reusable, text, blocks: [{ type: "actions", buttons: componentButtons }] },
-          });
-          const details = result?.result?.details || result?.result;
-          return ok({ ok: true, threadId, sessionKey, messageId: details?.result?.messageId || null, buttonCount: buttons.length });
-        } catch (e) {
-          return ok({ ok: false, error: e.message });
-        }
-      },
-    });
 
-    api.registerTool({
-      name: "ms3_fan_out",
-      description: "Apply an operation to all open threads in a forum (or all forums). Returns results per thread.",
-      parameters: {
-        type: "object",
-        properties: {
-          mindset: { type: "string", description: "Agent ID to filter. Omit for all." },
-          operation: { type: "string", description: "What to do: 'wake', 'close', 'post'. " },
-          message: { type: "string", description: "For wake/post: the message to send." },
-          tagId: { type: "string", description: "For close: tag to apply." },
-          dryRun: { type: "boolean", description: "If true, list matches but don't act. Default: true." },
-        },
-        required: ["operation"],
-      },
-      async execute(_id, params) {
-        const { mindset, operation, message, tagId, dryRun = true } = params;
-        const guildId = getGuildId();
-        if (!guildId) return ok({ ok: false, error: "No guild" });
 
-        const bindings = getConfigBindings(mindset);
-        const targets = [];
-        for (const binding of bindings) {
-          const forumId = binding.match.peer.id;
-          const agentId = binding.agentId;
-          try {
-            const { active } = await listForumThreads(guildId, forumId, false);
-            for (const t of active) targets.push({ agentId, forumId, threadId: t.id, name: t.name, sessionKey: sessionKeyFor(agentId, t.id) });
-          } catch {}
-        }
 
-        if (dryRun) return ok({ ok: true, dryRun: true, operation, matchCount: targets.length, targets });
-
-        const results = [];
-        for (const t of targets) {
-          try {
-            if (operation === "wake") {
-              const r = await wakeSession(_runtime, t.sessionKey, message || "Check in — what's your status?", true, 0);
-              results.push({ threadId: t.threadId, ok: true, runId: r.runId });
-            } else if (operation === "close") {
-              await ensureClosed(t.threadId, tagId);
-              results.push({ threadId: t.threadId, ok: true, action: "closed" });
-            } else if (operation === "post") {
-              await postPlainMessage(t.threadId, message || "Ping.");
-              results.push({ threadId: t.threadId, ok: true, action: "posted" });
-            } else {
-              results.push({ threadId: t.threadId, ok: false, error: `Unknown operation: ${operation}` });
-            }
-          } catch (e) {
-            results.push({ threadId: t.threadId, ok: false, error: e.message });
-          }
-        }
-        return ok({ ok: true, dryRun: false, operation, resultCount: results.length, results });
-      },
-    });
-
-    api.registerTool({
-      name: "ms3_activity_check",
-      description: "Find threads with no session activity in N hours. Returns stale threads that may need attention.",
-      parameters: {
-        type: "object",
-        properties: {
-          mindset: { type: "string", description: "Agent ID to filter. Omit for all." },
-          staleHours: { type: "number", description: "Hours of inactivity to consider stale. Default: 4." },
-        },
-      },
-      async execute(_id, params) {
-        const { mindset, staleHours = 4 } = params || {};
-        const cutoff = Date.now() - (staleHours * 60 * 60 * 1000);
-        const guildId = getGuildId();
-        if (!guildId) return ok({ ok: false, error: "No guild" });
-
-        const bindings = getConfigBindings(mindset);
-        const stale = [], active = [];
-
-        for (const binding of bindings) {
-          const forumId = binding.match.peer.id;
-          const agentId = binding.agentId;
-          try {
-            const { active: threads } = await listForumThreads(guildId, forumId, false);
-            const store = readStore(agentId);
-            for (const t of threads) {
-              const session = store[sessionKeyFor(agentId, t.id)];
-              const lastActivity = session?.updatedAt || 0;
-              const entry = { agentId, threadId: t.id, name: t.name, hasSession: !!session, sessionStatus: session?.status || null, lastActivity: lastActivity ? timeAgo(lastActivity) : "never", lastActivityMs: lastActivity };
-              (lastActivity < cutoff || !session ? stale : active).push(entry);
-            }
-          } catch {}
-        }
-
-        return ok({ ok: true, staleHours, staleCount: stale.length, activeCount: active.length, stale, active, timestamp: new Date().toISOString() });
-      },
-    });
-
-    api.registerTool({
-      name: "ms3_transition",
-      description: "Atomic state transition: rename thread + set tag + post status message. Reports success per step.",
-      parameters: {
-        type: "object",
-        properties: {
-          threadId: { type: "string", description: "Thread ID" },
-          name: { type: "string", description: "New thread name (optional)" },
-          tagId: { type: "string", description: "Tag to apply (optional)" },
-          message: { type: "string", description: "Status message to post (optional)" },
-          sessionKey: { type: "string", description: "Session to post as (optional — uses raw API if omitted)" },
-        },
-        required: ["threadId"],
-      },
-      async execute(_id, params) {
-        const { threadId, name, message, sessionKey } = params;
-        let { tagId } = params;
-        const steps = {};
-
-        if (tagId) { try { tagId = await resolveTagId(tagId, threadId); } catch {} }
-
-        if (name || tagId) {
-          try {
-            const patch = {};
-            if (name) patch.name = name;
-            if (tagId) patch.applied_tags = [tagId];
-            const ch = await patchThread(threadId, patch);
-            steps.thread = { ok: true, name: ch.name, tags: ch.applied_tags };
-          } catch (e) {
-            steps.thread = { ok: false, error: e.message };
-          }
-        }
-
-        if (message) {
-          try {
-            if (sessionKey) {
-              await invokeToolAsSession(sessionKey, "message", { action: "send", channel: "discord", target: `channel:${threadId}`, message });
-              steps.message = { ok: true, via: "session" };
-            } else {
-              await postStyledMessage(threadId, message, "status");
-              steps.message = { ok: true, via: "status-block" };
-            }
-          } catch (e) {
-            steps.message = { ok: false, error: e.message };
-          }
-        }
-
-        return ok({ ok: Object.values(steps).every(s => s.ok), threadId, steps });
-      },
-    });
-
-    api.registerTool({
-      name: "ms3_silent_query",
-      description: "Send a message to a session and get the response without posting to Discord. For orchestrator queries.",
-      parameters: {
-        type: "object",
-        properties: {
-          sessionKey: { type: "string", description: "Session to query" },
-          message: { type: "string", description: "Question to ask the session" },
-          timeoutMs: { type: "number", description: "Max wait time in ms. Default: 60000." },
-        },
-        required: ["sessionKey", "message"],
-      },
-      async execute(_id, params) {
-        try {
-          return ok(await silentQuery(_runtime, params.sessionKey, params.message, params.timeoutMs));
-        } catch (e) {
-          return ok({ ok: false, sessionKey: params.sessionKey, error: e.message });
-        }
-      },
-    });
 
     // ╔══════════════════════════════════════════════════════════════╗
     // ║  L4: Agent-facing tools — compose L2/L3, never reimplement ║
@@ -1906,7 +944,7 @@ export default {
 
         // Wake the session
         let wakeResult = null;
-        try { wakeResult = await wakeSession(_runtime, sessionResult.sessionKey, brief, true, 0); }
+        try { wakeResult = await wakeSession(sessionResult.sessionKey, brief, true, 0); }
         catch (e) { wakeResult = { ok: false, error: e.message }; }
 
         return ok({ ok: true, mindset, threadId, sessionKey: sessionResult.sessionKey, title, forumId, wakeResult });
@@ -1954,7 +992,7 @@ export default {
       },
       async execute(_id, params) {
         try {
-          return ok(await silentQuery(_runtime, params.sessionKey, params.question));
+          return ok(await silentQuery(params.sessionKey, params.question));
         } catch (e) {
           return ok({ ok: false, error: e.message });
         }
@@ -1974,7 +1012,7 @@ export default {
       },
       async execute(_id, params) {
         try {
-          const result = await wakeSession(_runtime, params.sessionKey, params.message || "Check in — what's your status on this?", true, 0);
+          const result = await wakeSession(params.sessionKey, params.message || "Check in — what's your status on this?", true, 0);
           return ok({ ok: true, sessionKey: params.sessionKey, runId: result.runId });
         } catch (e) {
           return ok({ ok: false, error: e.message });
