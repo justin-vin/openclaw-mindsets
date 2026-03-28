@@ -942,6 +942,9 @@ export default {
         // Ensure session (uses shared function — idempotent)
         const sessionResult = ensureSession(mindset, threadId);
 
+        // Trigger typing indicator before wake
+        try { await discordApi("POST", `/channels/${threadId}/typing`, {}); } catch {}
+
         // Wake the session
         let wakeResult = null;
         try { wakeResult = await wakeSession(sessionResult.sessionKey, brief, true, 0); }
