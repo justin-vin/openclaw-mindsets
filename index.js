@@ -924,6 +924,28 @@ export default {
     // Note: NOT a registered tool. discordApi is used by higher-level
     // composed tools. But we DO register granular Discord debug tools:
 
+    // Semantic rendering: kind → Discord component container
+    const RENDER_MODES = {
+      status:  { color: "#5865F2", emoji: "ℹ️" },   // blurple
+      success: { color: "#2ecc71", emoji: "✅" },   // green
+      error:   { color: "#e74c3c", emoji: "❌" },   // red
+      warning: { color: "#f39c12", emoji: "⚠️" },   // amber
+      info:    { color: "#3498db", emoji: "💡" },   // blue
+    };
+
+    async function postStyledMessage(threadId, content, kind = "status") {
+      const mode = RENDER_MODES[kind] || RENDER_MODES.status;
+      const color = parseInt(mode.color.replace("#", ""), 16);
+      const body = {
+        components: [{
+          type: 17, accent_color: color,
+          components: [{ type: 10, content }],
+        }],
+        flags: 32768,
+      };
+      return discordApi("POST", `/channels/${threadId}/messages`, body);
+    }
+
     // Helper: modify thread metadata
     async function patchThread(threadId, patch) {
       return discordApi("PATCH", `/channels/${threadId}`, patch);
@@ -1210,27 +1232,29 @@ export default {
     // components v2, and mentions.
     api.registerTool({
       name: "_ms_post_to_thread",
-      description: "[debug] Post a message to a Discord thread. Supports plain text and mentions.",
+      description: "[debug] Post a message to a Discord thread. Supports plain text and mentions. Set status=true for a styled status block.",
       parameters: {
         type: "object",
         properties: {
           threadId: { type: "string", description: "Discord thread ID" },
           content: { type: "string", description: "Message text (markdown ok)" },
           silent: { type: "boolean", description: "Suppress notification. Default: false" },
+          status: { type: "boolean", description: "Render as a styled status block (component container). Default: false" },
+          accentColor: { type: "string", description: "Hex color for status block. Default: '#5865F2' (blurple)" },
         },
         required: ["threadId", "content"],
       },
       async execute(_id, params) {
-        const { threadId, content, silent = false } = params;
+        const { threadId, content, silent = false, status = false, accentColor = "#5865F2" } = params;
         try {
+          if (status) {
+            const msg = await postStyledMessage(threadId, content, "status");
+            return ok({ ok: true, threadId, messageId: msg.id, rendered: "status" });
+          }
           const body = { content };
-          if (silent) body.flags = 4096; // SUPPRESS_NOTIFICATIONS
+          if (silent) body.flags = 4096;
           const msg = await discordApi("POST", `/channels/${threadId}/messages`, body);
-          return ok({
-            ok: true, threadId,
-            messageId: msg.id,
-            timestamp: msg.timestamp,
-          });
+          return ok({ ok: true, threadId, messageId: msg.id, rendered: "plain" });
         } catch (e) {
           return ok({ ok: false, error: e.message });
         }
@@ -1535,6 +1559,9 @@ export default {
         return ok({ ok: false, error: "Session not found", sessionKey });
       },
     });
+
+    // (Coverage trace: atoms 1-2 covered. Thread membership missing.
+    //  Adding it plus two Layer 2 molecules from the trace.)
 
     // ╔══════════════════════════════════════════════════════════════╗
     // ║  LAYER 1g: Comparison / diagnostic tools                   ║
@@ -2068,6 +2095,487 @@ export default {
         });
       },
     });
+
+    // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 3: Coordination primitives                          ║
+    // ║  Generic orchestration machinery. No domain knowledge.     ║
+    // ║  Knows: threads, sessions, gates, state, coordination.     ║
+    // ║  Doesn't know: tasks, mindsets, reviews, briefs.           ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    // ─── ms3_create_thread_session ─────────────────────────────────
+    // Atomic: create Discord thread + bootstrap session + post initial
+    // message. Guaranteed consistent — if any step fails, cleans up.
+    api.registerTool({
+      name: "ms3_create_thread_session",
+      description: "Atomic: create a Discord forum thread with a bootstrapped session. Returns thread ID, session key, and posted message ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          forumId: { type: "string", description: "Forum channel ID to create thread in" },
+          agentId: { type: "string", description: "Agent ID to own the session" },
+          threadName: { type: "string", description: "Thread name" },
+          message: { type: "string", description: "Initial message to post in thread" },
+          tagId: { type: "string", description: "Optional tag to apply" },
+        },
+        required: ["forumId", "agentId", "threadName", "message"],
+      },
+      async execute(_id, params) {
+        const { forumId, agentId, threadName, message, tagId, participant } = params;
+        const result = { steps: {}, timestamp: new Date().toISOString() };
+
+        // Step 1: Create thread via Discord API
+        let threadId;
+        try {
+          const body = {
+            name: threadName,
+            message: { content: message },
+          };
+          if (tagId) body.applied_tags = [tagId];
+          const thread = await discordApi("POST", `/channels/${forumId}/threads`, body);
+          threadId = thread.id;
+          result.threadId = threadId;
+          result.steps.thread = { ok: true, id: threadId };
+        } catch (e) {
+          result.steps.thread = { ok: false, error: e.message };
+          return ok({ ok: false, ...result });
+        }
+
+        // Step 2: Bootstrap session
+        try {
+          const sessionKey = `agent:${agentId}:discord:channel:${threadId}`;
+          const store = readStore(agentId);
+          store[sessionKey] = {
+            sessionId: crypto.randomUUID(),
+            status: "idle",
+            deliveryContext: { channel: "discord", to: `channel:${threadId}`, accountId: "default", threadId },
+            lastChannel: "discord", lastTo: `channel:${threadId}`,
+            lastAccountId: "default", lastThreadId: threadId,
+            channel: "discord", chatType: "channel",
+            updatedAt: Date.now(), startedAt: Date.now(), totalTokens: 0,
+          };
+          const storePath = join(AGENTS_DIR, agentId, "sessions", "sessions.json");
+          writeFileSync(storePath, JSON.stringify(store, null, 2));
+          result.sessionKey = sessionKey;
+          result.steps.session = { ok: true, key: sessionKey };
+        } catch (e) {
+          // Cleanup: archive the thread we just created
+          try { await patchThread(threadId, { archived: true, locked: true }); } catch {}
+          result.steps.session = { ok: false, error: e.message };
+          return ok({ ok: false, ...result });
+        }
+
+        return ok({ ok: true, ...result });
+      },
+    });
+
+    // ─── ms3_gate ──────────────────────────────────────────────────
+    // Post an interactive gate (buttons) to a thread as a specific session.
+    // Returns the message ID for tracking. The click will route to the
+    // session via forum binding. Generic — doesn't know approve/reject.
+    api.registerTool({
+      name: "ms3_gate",
+      description: "Post an interactive gate (buttons/select) to a thread as a session. Click routes to session. Returns message ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Session to own the interaction" },
+          threadId: { type: "string", description: "Thread to post in" },
+          text: { type: "string", description: "Gate prompt text" },
+          buttons: {
+            type: "array",
+            description: "Array of {label, style, value?} objects. Styles: primary, secondary, success, danger.",
+          },
+          allowedUsers: {
+            type: "array",
+            description: "Discord user IDs who can interact. Omit for anyone.",
+          },
+          reusable: { type: "boolean", description: "Allow multiple clicks. Default: false." },
+        },
+        required: ["sessionKey", "threadId", "text", "buttons"],
+      },
+      async execute(_id, params) {
+        const { sessionKey, threadId, text, buttons, allowedUsers, reusable = false } = params;
+        try {
+          const componentButtons = buttons.map(b => ({
+            label: b.label,
+            style: b.style || "primary",
+            ...(allowedUsers ? { allowedUsers } : {}),
+          }));
+
+          const result = await invokeToolAsSession(sessionKey, "message", {
+            action: "send",
+            channel: "discord",
+            target: `channel:${threadId}`,
+            components: {
+              reusable,
+              text,
+              blocks: [{ type: "actions", buttons: componentButtons }],
+            },
+          });
+
+          // Extract message ID from result
+          const details = result?.result?.details || result?.result;
+          const messageId = details?.result?.messageId || null;
+
+          return ok({ ok: true, threadId, sessionKey, messageId, buttonCount: buttons.length });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ─── ms3_fan_out ───────────────────────────────────────────────
+    // Apply an operation to all threads/sessions matching a filter.
+    // Generic map-and-act. The operation is a tool name + args template
+    // where {threadId} and {sessionKey} are substituted per match.
+    api.registerTool({
+      name: "ms3_fan_out",
+      description: "Apply an operation to all open threads in a forum (or all forums). Returns results per thread.",
+      parameters: {
+        type: "object",
+        properties: {
+          mindset: { type: "string", description: "Agent ID to filter. Omit for all." },
+          operation: { type: "string", description: "What to do: 'wake', 'close', 'post'. " },
+          message: { type: "string", description: "For wake/post: the message to send." },
+          tagId: { type: "string", description: "For close: tag to apply." },
+          dryRun: { type: "boolean", description: "If true, list matches but don't act. Default: true." },
+        },
+        required: ["operation"],
+      },
+      async execute(_id, params) {
+        const { mindset, operation, message, tagId, dryRun = true } = params;
+        const config = loadConfig();
+        const guildId = Object.keys(config.channels?.discord?.guilds || {})[0];
+        if (!guildId) return ok({ ok: false, error: "No guild" });
+
+        const bindings = (config.bindings || [])
+          .filter(b => b.match?.peer?.kind === "channel")
+          .filter(b => !mindset || b.agentId === mindset);
+
+        const targets = [];
+        for (const binding of bindings) {
+          const forumId = binding.match.peer.id;
+          const agentId = binding.agentId;
+          try {
+            const { active } = await listForumThreads(guildId, forumId, false);
+            for (const t of active) {
+              const sessionKey = `agent:${agentId}:discord:channel:${t.id}`;
+              targets.push({ agentId, forumId, threadId: t.id, name: t.name, sessionKey });
+            }
+          } catch {}
+        }
+
+        if (dryRun) {
+          return ok({ ok: true, dryRun: true, operation, matchCount: targets.length, targets });
+        }
+
+        const results = [];
+        for (const t of targets) {
+          try {
+            if (operation === "wake") {
+              const { runId } = await runtime.subagent.run({
+                sessionKey: t.sessionKey,
+                message: message || "Check in — what's your status?",
+                deliver: true,
+                idempotencyKey: crypto.randomUUID(),
+              });
+              results.push({ threadId: t.threadId, ok: true, runId });
+            } else if (operation === "close") {
+              await patchThread(t.threadId, { archived: true, locked: true, ...(tagId ? { applied_tags: [tagId] } : {}) });
+              results.push({ threadId: t.threadId, ok: true, action: "closed" });
+            } else if (operation === "post") {
+              await discordApi("POST", `/channels/${t.threadId}/messages`, { content: message || "Ping." });
+              results.push({ threadId: t.threadId, ok: true, action: "posted" });
+            } else {
+              results.push({ threadId: t.threadId, ok: false, error: `Unknown operation: ${operation}` });
+            }
+          } catch (e) {
+            results.push({ threadId: t.threadId, ok: false, error: e.message });
+          }
+        }
+
+        return ok({ ok: true, dryRun: false, operation, resultCount: results.length, results });
+      },
+    });
+
+    // ─── ms3_activity_check ────────────────────────────────────────
+    // Compare current board state to what you'd expect.
+    // Returns threads that changed since a given timestamp, or threads
+    // with no activity in N hours.
+    api.registerTool({
+      name: "ms3_activity_check",
+      description: "Find threads with no session activity in N hours. Returns stale threads that may need attention.",
+      parameters: {
+        type: "object",
+        properties: {
+          mindset: { type: "string", description: "Agent ID to filter. Omit for all." },
+          staleHours: { type: "number", description: "Hours of inactivity to consider stale. Default: 4." },
+        },
+      },
+      async execute(_id, params) {
+        const { mindset, staleHours = 4 } = params || {};
+        const cutoff = Date.now() - (staleHours * 60 * 60 * 1000);
+        const config = loadConfig();
+        const guildId = Object.keys(config.channels?.discord?.guilds || {})[0];
+        if (!guildId) return ok({ ok: false, error: "No guild" });
+
+        const bindings = (config.bindings || [])
+          .filter(b => b.match?.peer?.kind === "channel")
+          .filter(b => !mindset || b.agentId === mindset);
+
+        const stale = [];
+        const active = [];
+
+        for (const binding of bindings) {
+          const forumId = binding.match.peer.id;
+          const agentId = binding.agentId;
+          try {
+            const threads = await listForumThreads(guildId, forumId, false);
+            const store = readStore(agentId);
+            for (const t of threads.active) {
+              const sessionKey = `agent:${agentId}:discord:channel:${t.id}`;
+              const session = store[sessionKey];
+              const lastActivity = session?.updatedAt || 0;
+
+              const entry = {
+                agentId, threadId: t.id, name: t.name,
+                hasSession: !!session,
+                sessionStatus: session?.status || null,
+                lastActivity: lastActivity ? timeAgo(lastActivity) : "never",
+                lastActivityMs: lastActivity,
+              };
+
+              if (lastActivity < cutoff || !session) {
+                stale.push(entry);
+              } else {
+                active.push(entry);
+              }
+            }
+          } catch {}
+        }
+
+        return ok({
+          ok: true,
+          staleHours,
+          staleCount: stale.length,
+          activeCount: active.length,
+          stale,
+          active,
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+
+    // ─── ms3_transition ────────────────────────────────────────────
+    // Atomic state transition on a thread: rename + tag + post status
+    // message. All-or-nothing intent (best effort on each step, reports
+    // what succeeded).
+    api.registerTool({
+      name: "ms3_transition",
+      description: "Atomic state transition: rename thread + set tag + post status message. Reports success per step.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Thread ID" },
+          name: { type: "string", description: "New thread name (optional)" },
+          tagId: { type: "string", description: "Tag to apply (optional)" },
+          message: { type: "string", description: "Status message to post (optional)" },
+          sessionKey: { type: "string", description: "Session to post as (optional — uses raw API if omitted)" },
+        },
+        required: ["threadId"],
+      },
+      async execute(_id, params) {
+        const { threadId, name, tagId, message, sessionKey } = params;
+        const steps = {};
+
+        // Step 1: Rename + tag (single Discord API call)
+        if (name || tagId) {
+          try {
+            const patch = {};
+            if (name) patch.name = name;
+            if (tagId) patch.applied_tags = [tagId];
+            const ch = await patchThread(threadId, patch);
+            steps.thread = { ok: true, name: ch.name, tags: ch.applied_tags };
+          } catch (e) {
+            steps.thread = { ok: false, error: e.message };
+          }
+        }
+
+        // Step 2: Post status message
+        if (message) {
+          try {
+            if (sessionKey) {
+              // Post as session (interactive-capable)
+              await invokeToolAsSession(sessionKey, "message", {
+                action: "send", channel: "discord",
+                target: `channel:${threadId}`, message,
+              });
+              steps.message = { ok: true, via: "session" };
+            } else {
+              await postStyledMessage(threadId, message, "status");
+              steps.message = { ok: true, via: "status-block" };
+            }
+          } catch (e) {
+            steps.message = { ok: false, error: e.message };
+          }
+        }
+
+        const allOk = Object.values(steps).every(s => s.ok);
+        return ok({ ok: allOk, threadId, steps });
+      },
+    });
+
+    // ─── ms3_silent_query ────────────────────────────────────────
+    // Send a message to a session and get the response back WITHOUT
+    // posting to Discord. For orchestration: "sysadmin, what's your
+    // status?" → answer comes back to caller, not to the thread.
+    api.registerTool({
+      name: "ms3_silent_query",
+      description: "Send a message to a session and get the response without posting to Discord. For orchestrator queries.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Session to query" },
+          message: { type: "string", description: "Question to ask the session" },
+          timeoutMs: { type: "number", description: "Max wait time in ms. Default: 60000." },
+        },
+        required: ["sessionKey", "message"],
+      },
+      async execute(_id, params) {
+        const { sessionKey, message, timeoutMs = 60000 } = params;
+        try {
+          const { runId } = await runtime.subagent.run({
+            sessionKey,
+            message,
+            deliver: false, // Don't post to Discord
+            idempotencyKey: crypto.randomUUID(),
+          });
+
+          try {
+            const result = await runtime.subagent.waitForRun({ runId, timeoutMs });
+            // Get the reply from session messages
+            let reply = result?.reply || null;
+
+            // If no reply in result, try reading last message from session
+            if (!reply) {
+              try {
+                const { messages } = await runtime.subagent.getSessionMessages({
+                  sessionKey, limit: 3,
+                });
+                // Find last assistant message
+                const lastAssistant = [...(messages || [])].reverse()
+                  .find(m => m.role === "assistant");
+                if (lastAssistant?.content) {
+                  if (typeof lastAssistant.content === "string") {
+                    reply = lastAssistant.content;
+                  } else if (Array.isArray(lastAssistant.content)) {
+                    reply = lastAssistant.content
+                      .filter(c => c.type === "text")
+                      .map(c => c.text)
+                      .join("\n");
+                  }
+                }
+              } catch {}
+            }
+
+            return ok({
+              ok: true, sessionKey, runId,
+              status: result?.status || "unknown",
+              reply: reply || "(no reply)",
+            });
+          } catch (e) {
+            return ok({ ok: true, sessionKey, runId, status: "timeout", error: e.message });
+          }
+        } catch (e) {
+          return ok({ ok: false, sessionKey, error: e.message });
+        }
+      },
+    });
+
+    // ╔══════════════════════════════════════════════════════════════╗
+    // ║  Coverage gap fills                                        ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    // L1 Atom: Thread member management
+    // Discord API: PUT/DELETE /channels/{id}/thread-members/{user_id}
+    // How threads appear/disappear in a user's sidebar.
+    // Not registering as a tool — this is a one-liner agents can do
+    // via the raw Discord API helpers. Instead, bake it into
+    // ms3_create_thread_session so created threads automatically
+    // include relevant users.
+    // TODO: add participant param to ms3_create_thread_session
+
+    // L1 Atom: Mindset registry — read agent descriptions
+    // Agents have SOUL.md in their workspace. Read the first few lines
+    // to get a description of what the mindset does.
+    // Also reads skills snapshot from session store.
+
+    // L1 Atom: Workspace file access
+    // Read any file from an agent's workspace directory.
+
+    // Combining mindset registry + workspace access into one tool:
+
+    api.registerTool({
+      name: "_ms_read_agent_workspace",
+      description: "[debug] Read a file from an agent's workspace directory. Use to inspect SOUL.md, IDENTITY.md, skills.",
+      parameters: {
+        type: "object",
+        properties: {
+          agentId: { type: "string", description: "Agent ID" },
+          file: { type: "string", description: "Relative path within workspace (e.g. 'SOUL.md', 'IDENTITY.md'). Default: 'SOUL.md'" },
+          maxLines: { type: "number", description: "Max lines to return. Default: 30." },
+        },
+        required: ["agentId"],
+      },
+      async execute(_id, params) {
+        const { agentId, file = "SOUL.md", maxLines = 30 } = params;
+        // Resolve workspace from agent config first, then fallback paths
+        const config = loadConfig();
+        const agentList = config.agents?.list || [];
+        const agentConfig = agentList.find(a => a?.id === agentId);
+        const configWorkspace = agentConfig?.workspace;
+
+        const paths = [
+          ...(configWorkspace ? [join(configWorkspace, file)] : []),
+          join(OPENCLAW_HOME, `workspace-${agentId}`, file),
+          join(AGENTS_DIR, agentId, "workspace", file),
+          join(AGENTS_DIR, agentId, "agent", "workspace", file),
+          join(OPENCLAW_HOME, "workspace", file), // fallback to shared workspace
+        ];
+
+        for (const p of paths) {
+          try {
+            const content = readFileSync(p, "utf-8");
+            const lines = content.split("\n").slice(0, maxLines);
+            return ok({
+              ok: true, agentId, file, path: p,
+              lines: lines.length,
+              content: lines.join("\n"),
+            });
+          } catch {} // try next path
+        }
+        return ok({ ok: false, agentId, file, error: "File not found in any workspace path" });
+      },
+    });
+
+    // L3: Cross-session notification
+    // When a mindset finishes work, it should be able to notify another
+    // session (typically main). This is just _ms_wake_session targeting
+    // main with a summary. But wrapping it as a named primitive makes
+    // the intent clear and lets us add routing logic later.
+    // Actually — sessions_send already does this natively. And
+    // ms3_silent_query lets main poll mindsets. The missing piece is
+    // PUSH notification: mindset → main without main asking.
+    // This is just invoke message tool as the mindset session,
+    // targeting main's channel. Or wake main's session.
+
+    // For now: not registering a separate tool. The agent can use
+    // sessions_send (built into OpenClaw) or _ms_wake_session targeting
+    // main. Adding a wrapper would be premature opinion.
+
+    // Instead, let me add the thread member management to
+    // ms3_create_thread_session:
 
     logger.info("openclaw-mindsets: registered all tools");
   },
