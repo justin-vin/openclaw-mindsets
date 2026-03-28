@@ -891,7 +891,319 @@ export default {
     });
 
     // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 1c: Discord API debug tools (_ms_*)                 ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    function getDiscordToken() {
+      const config = loadConfig();
+      return config.channels?.discord?.token;
+    }
+
+    async function discordApi(method, path, body) {
+      const token = getDiscordToken();
+      if (!token) throw new Error("Discord token not found in config");
+      const opts = {
+        method,
+        headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
+      };
+      if (body) opts.body = JSON.stringify(body);
+      const res = await fetch(`https://discord.com/api/v10${path}`, opts);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Discord API ${res.status}: ${text}`);
+      }
+      return res.json();
+    }
+
+    // ─── _ms_health (cross-agent) ─── already registered above ───
+
+    // Everything below uses the Discord REST API directly via bot token
+    // because the message tool doesn't expose all thread operations.
+
+    // ─── _ms_archive_thread ────────────────────────────────────────
+    // Note: NOT a registered tool. discordApi is used by higher-level
+    // composed tools. But we DO register granular Discord debug tools:
+
+    // Helper: modify thread metadata
+    async function patchThread(threadId, patch) {
+      return discordApi("PATCH", `/channels/${threadId}`, patch);
+    }
+
+    // Helper: get channel info
+    async function getChannel(channelId) {
+      return discordApi("GET", `/channels/${channelId}`);
+    }
+
+    // Helper: list threads in a forum
+    async function listForumThreads(guildId, channelId, includeArchived = true) {
+      // Active threads (guild-wide, filter by parent)
+      const active = await discordApi("GET", `/guilds/${guildId}/threads/active`);
+      const activeInForum = (active.threads || []).filter(t => t.parent_id === channelId);
+
+      let archived = [];
+      if (includeArchived) {
+        try {
+          const arch = await discordApi("GET", `/channels/${channelId}/threads/archived/public?limit=100`);
+          archived = arch.threads || [];
+        } catch {} // may fail if no archived threads
+      }
+
+      return { active: activeInForum, archived };
+    }
+
+    // Helper: get available tags for a forum
+    async function getForumTags(channelId) {
+      const ch = await getChannel(channelId);
+      return (ch.available_tags || []).map(t => ({ id: t.id, name: t.name }));
+    }
+
+    // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 1d: Thread lifecycle debug tools                    ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    // These fill gaps the `message` tool doesn't cover.
+
+    // ─── _ms_close_thread ──────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_close_thread",
+      description: "[debug] Close a thread: archive + lock. Optionally rename and retag.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID" },
+          rename: { type: "string", description: "New name (optional). Tip: prefix with ✅ or ❌" },
+          tagId: { type: "string", description: "Tag ID to apply (optional)" },
+        },
+        required: ["threadId"],
+      },
+      async execute(_id, params) {
+        const { threadId, rename, tagId } = params;
+        try {
+          const patch = { archived: true, locked: true };
+          if (rename) patch.name = rename;
+          if (tagId) patch.applied_tags = [tagId];
+          const result = await patchThread(threadId, patch);
+          return ok({
+            ok: true, threadId,
+            name: result.name,
+            archived: result.thread_metadata?.archived,
+            locked: result.thread_metadata?.locked,
+            tags: result.applied_tags,
+          });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ─── _ms_open_thread ───────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_open_thread",
+      description: "[debug] Reopen a thread: unarchive + unlock. Optionally rename and retag.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID" },
+          rename: { type: "string", description: "New name (optional). Tip: prefix with 🔄" },
+          tagId: { type: "string", description: "Tag ID to apply (optional)" },
+        },
+        required: ["threadId"],
+      },
+      async execute(_id, params) {
+        const { threadId, rename, tagId } = params;
+        try {
+          const patch = { archived: false, locked: false };
+          if (rename) patch.name = rename;
+          if (tagId) patch.applied_tags = [tagId];
+          const result = await patchThread(threadId, patch);
+          return ok({
+            ok: true, threadId,
+            name: result.name,
+            archived: result.thread_metadata?.archived,
+            locked: result.thread_metadata?.locked,
+            tags: result.applied_tags,
+          });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ─── _ms_get_thread ────────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_get_thread",
+      description: "[debug] Get full thread state: Discord metadata + session store data combined.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID" },
+        },
+        required: ["threadId"],
+      },
+      async execute(_id, params) {
+        const { threadId } = params;
+        try {
+          // Discord side
+          const ch = await getChannel(threadId);
+          const parentId = ch.parent_id;
+
+          // Get parent forum tags
+          let tagMap = {};
+          try {
+            const tags = await getForumTags(parentId);
+            for (const t of tags) tagMap[t.id] = t.name;
+          } catch {}
+
+          // Session side
+          const sessions = [];
+          for (const agentId of listAgentIds()) {
+            const store = readStore(agentId);
+            for (const [key, v] of Object.entries(store)) {
+              if (key.includes(threadId) || v.deliveryContext?.threadId === threadId) {
+                sessions.push(formatSession(key, v, agentId));
+              }
+            }
+          }
+
+          // Thread binding
+          const tb = loadThreadBindings();
+          const focused = tb.bindings?.[threadId] || null;
+
+          // Forum binding — which agent owns the parent forum?
+          const fb = getForumBindings();
+          const forumAgent = fb[`forum:${parentId}`] || null;
+
+          return ok({
+            threadId,
+            name: ch.name,
+            parentId,
+            parentName: null, // would need another API call
+            forumAgent,
+            archived: ch.thread_metadata?.archived || false,
+            locked: ch.thread_metadata?.locked || false,
+            tags: (ch.applied_tags || []).map(id => ({ id, name: tagMap[id] || "unknown" })),
+            messageCount: ch.message_count || 0,
+            memberCount: ch.member_count || 0,
+            createdAt: ch.thread_metadata?.create_timestamp,
+            autoArchiveDuration: ch.thread_metadata?.auto_archive_duration,
+            // Sessions
+            sessionCount: sessions.length,
+            sessions,
+            focused,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ─── _ms_board ─────────────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_board",
+      description: "[debug] Full board view: all forums, all threads, all sessions. Filterable by mindset or status.",
+      parameters: {
+        type: "object",
+        properties: {
+          mindset: { type: "string", description: "Filter by agent/mindset ID (e.g. 'sysadmin'). Omit for all." },
+          status: { type: "string", description: "Filter: 'open' (not archived), 'closed' (archived), 'all'. Default: 'all'" },
+        },
+      },
+      async execute(_id, params) {
+        const { mindset, status: statusFilter = "all" } = params || {};
+        const fb = getForumBindings();
+        const config = loadConfig();
+        const guildId = Object.keys(config.channels?.discord?.guilds || {})[0];
+        if (!guildId) return ok({ ok: false, error: "No guild configured" });
+
+        const bindings = (config.bindings || [])
+          .filter(b => b.match?.peer?.kind === "channel")
+          .filter(b => !mindset || b.agentId === mindset);
+
+        const forums = [];
+
+        for (const binding of bindings) {
+          const forumId = binding.match.peer.id;
+          const agentId = binding.agentId;
+
+          try {
+            // Get forum info + tags
+            const forumInfo = await getChannel(forumId);
+            const tagMap = {};
+            for (const t of (forumInfo.available_tags || [])) tagMap[t.id] = t.name;
+
+            // Get threads
+            const { active, archived } = await listForumThreads(guildId, forumId);
+
+            let allThreads = [
+              ...active.map(t => ({ ...t, _active: true })),
+              ...archived.map(t => ({ ...t, _active: false })),
+            ];
+
+            // Filter by status
+            if (statusFilter === "open") allThreads = allThreads.filter(t => !t.thread_metadata?.archived);
+            else if (statusFilter === "closed") allThreads = allThreads.filter(t => t.thread_metadata?.archived);
+
+            // Get sessions for this agent
+            const store = readStore(agentId);
+
+            const threads = allThreads.map(t => {
+              const sessionKey = `agent:${agentId}:discord:channel:${t.id}`;
+              const session = store[sessionKey];
+              const tags = (t.applied_tags || []).map(id => tagMap[id] || id);
+
+              return {
+                id: t.id,
+                name: t.name,
+                tags,
+                archived: t.thread_metadata?.archived || false,
+                locked: t.thread_metadata?.locked || false,
+                messageCount: t.message_count || 0,
+                createdAt: t.thread_metadata?.create_timestamp,
+                hasSession: !!session,
+                sessionStatus: session?.status || null,
+                sessionTokens: session?.totalTokens || 0,
+                sessionUpdated: session ? timeAgo(session.updatedAt) : null,
+                hasDiscordDelivery: session?.deliveryContext?.channel === "discord" && !!session?.deliveryContext?.to,
+              };
+            });
+
+            // Sort: open first, then by message count desc
+            threads.sort((a, b) => {
+              if (a.archived !== b.archived) return a.archived ? 1 : -1;
+              return (b.messageCount || 0) - (a.messageCount || 0);
+            });
+
+            forums.push({
+              agentId,
+              forumId,
+              forumName: forumInfo.name,
+              tags: Object.entries(tagMap).map(([id, name]) => ({ id, name })),
+              threadCount: threads.length,
+              openCount: threads.filter(t => !t.archived).length,
+              closedCount: threads.filter(t => t.archived).length,
+              withSession: threads.filter(t => t.hasSession).length,
+              threads,
+            });
+          } catch (e) {
+            forums.push({ agentId, forumId, error: e.message });
+          }
+        }
+
+        return ok({
+          guildId,
+          mindsetFilter: mindset || "all",
+          statusFilter,
+          forumCount: forums.length,
+          forums,
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+
+    // ╔══════════════════════════════════════════════════════════════╗
     // ║  LAYER 2: Agent tools (mindset_*)                          ║
+    // ║  (Placeholder — semantic tools composed from Layer 1)      ║
     // ╚══════════════════════════════════════════════════════════════╝
 
     api.registerTool({
