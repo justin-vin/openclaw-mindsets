@@ -1,0 +1,31 @@
+{
+  "id": "openclaw-mindsets",
+  "name": "OpenClaw Mindsets",
+  "description": "Multiple agents acting as one. Thread-based context orchestration.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "autoSubscribe": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Discord user IDs to auto-add to every new thread."
+      },
+      "displayName": {
+        "type": "string",
+        "description": "Name shown on webhook posts (thread creation, action blocks, recovery). Defaults to main agent name or 'Mindsets'."
+      },
+      "categoryId": {
+        "type": "string",
+        "description": "Discord category ID where new mindset forum channels are created."
+      },
+      "show_housekeeping": {
+        "type": "boolean",
+        "description": "Whether to post visible housekeeping/routing embeds in Discord. Analysis still runs and injects as context regardless. Default: false."
+      }
+    },
+    "additionalProperties": false
+  },
+  "skills": [
+    "./skills/mindsets"
+  ]
+}
