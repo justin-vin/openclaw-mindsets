@@ -1202,8 +1202,529 @@ export default {
     });
 
     // ╔══════════════════════════════════════════════════════════════╗
-    // ║  LAYER 2: Agent tools (mindset_*)                          ║
-    // ║  (Placeholder — semantic tools composed from Layer 1)      ║
+    // ║  LAYER 1e: Write tools — post, edit, react, patch          ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    // ─── _ms_post_to_thread ────────────────────────────────────────
+    // Post a message to a Discord thread. Supports plain text,
+    // components v2, and mentions.
+    api.registerTool({
+      name: "_ms_post_to_thread",
+      description: "[debug] Post a message to a Discord thread. Supports plain text and mentions.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID" },
+          content: { type: "string", description: "Message text (markdown ok)" },
+          silent: { type: "boolean", description: "Suppress notification. Default: false" },
+        },
+        required: ["threadId", "content"],
+      },
+      async execute(_id, params) {
+        const { threadId, content, silent = false } = params;
+        try {
+          const body = { content };
+          if (silent) body.flags = 4096; // SUPPRESS_NOTIFICATIONS
+          const msg = await discordApi("POST", `/channels/${threadId}/messages`, body);
+          return ok({
+            ok: true, threadId,
+            messageId: msg.id,
+            timestamp: msg.timestamp,
+          });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ─── _ms_post_components ───────────────────────────────────────
+    // Post a rich component message (containers, buttons, text blocks)
+    api.registerTool({
+      name: "_ms_post_components",
+      description: "[debug] Post a rich Discord components v2 message to a thread. Container with accent color, text blocks, section+button.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID" },
+          accentColor: { type: "string", description: "Container accent color hex (e.g. '#2ecc71')" },
+          blocks: {
+            type: "array",
+            description: "Array of block objects: {type:'text',text:'...'} or {type:'section',text:'...',buttonLabel:'...',buttonStyle:'success|danger|secondary|primary'}",
+          },
+        },
+        required: ["threadId", "blocks"],
+      },
+      async execute(_id, params) {
+        const { threadId, accentColor, blocks = [] } = params;
+        try {
+          // Build Discord components v2 payload
+          // Container (type 17) wraps everything
+          const components = [];
+          for (const block of blocks) {
+            if (block.type === "text") {
+              // TextDisplay (type 10)
+              components.push({ type: 10, content: block.text });
+            } else if (block.type === "section") {
+              // Section (type 9) with optional button accessory
+              const section = {
+                type: 9,
+                components: [{ type: 10, content: block.text }],
+              };
+              if (block.buttonLabel) {
+                const styleMap = { primary: 1, secondary: 2, success: 3, danger: 4 };
+                section.accessory = {
+                  type: 2, // Button
+                  style: styleMap[block.buttonStyle] || 2,
+                  label: block.buttonLabel,
+                  custom_id: `ms_btn_${threadId}_${Date.now()}`,
+                };
+              }
+              components.push(section);
+            } else if (block.type === "separator") {
+              components.push({ type: 14 }); // Separator
+            }
+          }
+
+          // Wrap in container
+          const container = { type: 17, components };
+          if (accentColor) {
+            // Convert hex to int
+            const color = parseInt(accentColor.replace("#", ""), 16);
+            container.accent_color = color;
+          }
+
+          const body = {
+            components: [container],
+            flags: 32768, // IS_COMPONENTS_V2
+          };
+
+          const msg = await discordApi("POST", `/channels/${threadId}/messages`, body);
+          return ok({
+            ok: true, threadId,
+            messageId: msg.id,
+            componentCount: components.length,
+          });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ─── _ms_edit_message ──────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_edit_message",
+      description: "[debug] Edit a message in a Discord thread.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread/channel ID" },
+          messageId: { type: "string", description: "Message ID to edit" },
+          content: { type: "string", description: "New message text" },
+        },
+        required: ["threadId", "messageId", "content"],
+      },
+      async execute(_id, params) {
+        const { threadId, messageId, content } = params;
+        try {
+          const msg = await discordApi("PATCH", `/channels/${threadId}/messages/${messageId}`, { content });
+          return ok({ ok: true, messageId: msg.id, edited: msg.edited_timestamp });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ─── _ms_delete_message ────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_delete_message",
+      description: "[debug] Delete a message from a Discord thread.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread/channel ID" },
+          messageId: { type: "string", description: "Message ID to delete" },
+        },
+        required: ["threadId", "messageId"],
+      },
+      async execute(_id, params) {
+        const { threadId, messageId } = params;
+        try {
+          await fetch(`https://discord.com/api/v10/channels/${threadId}/messages/${messageId}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bot ${getDiscordToken()}` },
+          });
+          return ok({ ok: true, deleted: messageId });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ─── _ms_react ─────────────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_react",
+      description: "[debug] Add a reaction to a message in a Discord thread.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread/channel ID" },
+          messageId: { type: "string", description: "Message ID to react to" },
+          emoji: { type: "string", description: "Emoji (e.g. '✅', '👀', '🔥')" },
+        },
+        required: ["threadId", "messageId", "emoji"],
+      },
+      async execute(_id, params) {
+        const { threadId, messageId, emoji } = params;
+        try {
+          const encoded = encodeURIComponent(emoji);
+          await fetch(`https://discord.com/api/v10/channels/${threadId}/messages/${messageId}/reactions/${encoded}/@me`, {
+            method: "PUT",
+            headers: { Authorization: `Bot ${getDiscordToken()}` },
+          });
+          return ok({ ok: true, messageId, emoji });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ─── _ms_read_thread ───────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_read_thread",
+      description: "[debug] Read recent messages from a Discord thread.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID" },
+          limit: { type: "number", description: "Max messages (1-100, default 20)" },
+        },
+        required: ["threadId"],
+      },
+      async execute(_id, params) {
+        const { threadId, limit = 20 } = params;
+        try {
+          const clamp = Math.min(Math.max(limit || 20, 1), 100);
+          const messages = await discordApi("GET", `/channels/${threadId}/messages?limit=${clamp}`);
+          const simplified = (messages || []).map(m => ({
+            id: m.id,
+            author: m.author?.global_name || m.author?.username || "unknown",
+            authorId: m.author?.id,
+            isBot: m.author?.bot || false,
+            content: (m.content || "").substring(0, 300),
+            hasComponents: (m.components || []).length > 0,
+            timestamp: m.timestamp,
+          }));
+          // Reverse to chronological order
+          simplified.reverse();
+          return ok({ threadId, count: simplified.length, messages: simplified });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
+      },
+    });
+
+    // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 1f: Session mutation tools                          ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    // ─── _ms_patch_session ─────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_patch_session",
+      description: "[debug] Patch arbitrary fields on a session entry. Use for model override, status, etc.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Session key to patch" },
+          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
+          patch: { type: "object", description: "Fields to merge into the session entry (e.g. {model: 'claude-sonnet-4-20250514', status: 'idle'})" },
+        },
+        required: ["sessionKey", "patch"],
+      },
+      async execute(_id, params) {
+        const { sessionKey, patch } = params;
+        const agents = params.agentId ? [params.agentId] : listAgentIds();
+
+        for (const aid of agents) {
+          const store = readStore(aid);
+          if (!store[sessionKey]) continue;
+
+          const before = {};
+          for (const k of Object.keys(patch)) before[k] = store[sessionKey][k];
+
+          Object.assign(store[sessionKey], patch);
+          store[sessionKey].updatedAt = Date.now();
+
+          const storePath = join(AGENTS_DIR, aid, "sessions", "sessions.json");
+          writeFileSync(storePath, JSON.stringify(store, null, 2));
+
+          return ok({ ok: true, agentId: aid, sessionKey, before, after: patch });
+        }
+        return ok({ ok: false, error: "Session not found", sessionKey });
+      },
+    });
+
+    // ─── _ms_reset_session ─────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_reset_session",
+      description: "[debug] Reset a session: delete transcript file, reset token counts, keep deliveryContext and binding.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Session key to reset" },
+          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
+        },
+        required: ["sessionKey"],
+      },
+      async execute(_id, params) {
+        const { sessionKey } = params;
+        const agents = params.agentId ? [params.agentId] : listAgentIds();
+
+        for (const aid of agents) {
+          const store = readStore(aid);
+          if (!store[sessionKey]) continue;
+
+          const entry = store[sessionKey];
+          const oldFile = entry.sessionFile;
+          const dc = entry.deliveryContext;
+          const channel = entry.channel;
+          const chatType = entry.chatType;
+          const origin = entry.origin;
+
+          // Rename old transcript if it exists
+          if (oldFile) {
+            try {
+              const { renameSync } = await import("node:fs");
+              renameSync(oldFile, `${oldFile}.reset.${Date.now()}`);
+            } catch {} // ok if file doesn't exist
+          }
+
+          // Reset fields but keep identity/binding
+          Object.assign(entry, {
+            status: "idle",
+            sessionFile: null,
+            totalTokens: 0,
+            totalTokensFresh: false,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            estimatedCostUsd: 0,
+            contextTokens: 0,
+            compactionCount: 0,
+            abortedLastRun: false,
+            updatedAt: Date.now(),
+            startedAt: Date.now(),
+            endedAt: null,
+            runtimeMs: null,
+            // Preserve these
+            deliveryContext: dc,
+            channel,
+            chatType,
+            origin,
+          });
+
+          const storePath = join(AGENTS_DIR, aid, "sessions", "sessions.json");
+          writeFileSync(storePath, JSON.stringify(store, null, 2));
+
+          return ok({
+            ok: true, agentId: aid, sessionKey,
+            oldTranscript: oldFile || null,
+            deliveryContextPreserved: !!dc,
+          });
+        }
+        return ok({ ok: false, error: "Session not found", sessionKey });
+      },
+    });
+
+    // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 1g: Comparison / diagnostic tools                   ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    // ─── _ms_thread_vs_session ─────────────────────────────────────
+    // Compare Discord thread messages with session transcript — see
+    // what's in the thread vs what the agent actually processed
+    api.registerTool({
+      name: "_ms_thread_vs_session",
+      description: "[debug] Compare thread messages with session transcript side by side. Shows gaps, mismatches, and routing issues.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID" },
+          limit: { type: "number", description: "Max messages to compare (default 20)" },
+        },
+        required: ["threadId"],
+      },
+      async execute(_id, params) {
+        const { threadId, limit = 20 } = params;
+        const clamp = Math.min(Math.max(limit, 1), 50);
+
+        // 1. Get Discord thread messages
+        let threadMessages = [];
+        try {
+          const msgs = await discordApi("GET", `/channels/${threadId}/messages?limit=${clamp}`);
+          threadMessages = (msgs || []).reverse().map(m => ({
+            id: m.id,
+            author: m.author?.global_name || m.author?.username || "unknown",
+            authorId: m.author?.id,
+            isBot: m.author?.bot || false,
+            content: (m.content || "").substring(0, 300),
+            hasComponents: (m.components || []).length > 0,
+            timestamp: m.timestamp,
+          }));
+        } catch (e) {
+          return ok({ error: `Can't read thread: ${e.message}` });
+        }
+
+        // 2. Find ALL sessions for this thread
+        const sessions = [];
+        for (const agentId of listAgentIds()) {
+          const store = readStore(agentId);
+          for (const [key, v] of Object.entries(store)) {
+            if (key.includes(threadId) || v.deliveryContext?.threadId === threadId) {
+              sessions.push({ agentId, key, ...v });
+            }
+          }
+        }
+
+        // 3. Get transcript for each session
+        const sessionTranscripts = [];
+        for (const sess of sessions) {
+          if (!sess.sessionFile) {
+            sessionTranscripts.push({
+              agentId: sess.agentId,
+              key: sess.key,
+              status: sess.status || "unknown",
+              totalTokens: sess.totalTokens || 0,
+              messages: [],
+              note: "no transcript file",
+            });
+            continue;
+          }
+
+          try {
+            const raw = readFileSync(sess.sessionFile, "utf-8");
+            const lines = raw.trim().split("\n").filter(l => l.trim());
+            const msgs = [];
+            const start = Math.max(0, lines.length - clamp);
+            for (let i = start; i < lines.length; i++) {
+              try {
+                const envelope = JSON.parse(lines[i]);
+                if (envelope.type !== "message") continue;
+                const msg = envelope.message || {};
+                if (!msg.role) continue;
+
+                const content = msg.content;
+                let text = "";
+                if (typeof content === "string") {
+                  text = content.substring(0, 300);
+                } else if (Array.isArray(content)) {
+                  text = content
+                    .filter(c => c.type === "text")
+                    .map(c => c.text)
+                    .join("\n")
+                    .substring(0, 300);
+                }
+
+                msgs.push({
+                  role: msg.role,
+                  text,
+                  timestamp: envelope.timestamp ? new Date(envelope.timestamp).toISOString() : null,
+                });
+              } catch {}
+            }
+
+            sessionTranscripts.push({
+              agentId: sess.agentId,
+              key: sess.key,
+              status: sess.status || "unknown",
+              totalTokens: sess.totalTokens || 0,
+              messageCount: msgs.length,
+              messages: msgs,
+            });
+          } catch (e) {
+            sessionTranscripts.push({
+              agentId: sess.agentId,
+              key: sess.key,
+              error: e.message,
+            });
+          }
+        }
+
+        // 4. Analysis
+        const analysis = {
+          threadMessageCount: threadMessages.length,
+          sessionCount: sessions.length,
+          sessionsWithTranscript: sessionTranscripts.filter(s => s.messageCount > 0).length,
+          sessionsEmpty: sessionTranscripts.filter(s => s.messageCount === 0 || s.note).length,
+        };
+
+        // Check for messages in thread but not in any session
+        const botMessages = threadMessages.filter(m => m.isBot);
+        const humanMessages = threadMessages.filter(m => !m.isBot);
+        analysis.humanMessagesInThread = humanMessages.length;
+        analysis.botMessagesInThread = botMessages.length;
+
+        // Check which agent(s) actually processed the thread
+        const activeAgents = sessionTranscripts
+          .filter(s => s.messageCount > 0)
+          .map(s => s.agentId);
+        analysis.activeAgents = activeAgents;
+
+        if (sessions.length === 0) {
+          analysis.issue = "No sessions found for this thread";
+        } else if (activeAgents.length === 0) {
+          analysis.issue = "Sessions exist but none have transcripts — thread was never processed by an agent";
+        } else if (activeAgents.length > 1) {
+          analysis.issue = `Multiple agents processed this thread: ${activeAgents.join(", ")}`;
+        }
+
+        return ok({
+          threadId,
+          analysis,
+          thread: { count: threadMessages.length, messages: threadMessages },
+          sessions: sessionTranscripts,
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+
+    // ─── _ms_invoke_tool ──────────────────────────────────────────
+    // Call any tool via the Gateway tools/invoke API as a specific session.
+    // This is how we post interactive components owned by a mindset session.
+    // NOT registered as a tool (too powerful / generic).
+    // Instead, wrapped by specific tools below.
+
+    async function invokeToolAsSession(sessionKey, toolName, args) {
+      const config = loadConfig();
+      const token = config.gateway?.auth?.token;
+      const port = config.gateway?.port || 18789;
+      if (!token) throw new Error("Gateway auth token not found");
+
+      const res = await fetch(`http://127.0.0.1:${port}/tools/invoke`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ tool: toolName, sessionKey, args }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`tools/invoke ${res.status}: ${text}`);
+      }
+      return res.json();
+    }
+
+    // Already in _ms_health: zombie detection, orphan sessions, broken delivery, costs.
+    // The thread_vs_session tool above catches routing mismatches.
+    // Main session leaks are caught by _ms_health's cross-agent scan — any session
+    // with deliveryContext pointing at a forum thread but owned by wrong agent shows
+    // as a binding conflict.
+
+    // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 2: Composed operations (ms_*)                       ║
+    // ║  Combine atoms into meaningful system actions.             ║
+    // ║  No workflow opinions. Just what coheres naturally.        ║
     // ╚══════════════════════════════════════════════════════════════╝
 
     api.registerTool({
