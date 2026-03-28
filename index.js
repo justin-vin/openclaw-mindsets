@@ -598,6 +598,299 @@ export default {
     });
 
     // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 1b: Debug action tools (_ms_*)                      ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    // ─── _ms_kill_session ──────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_kill_session",
+      description: "[debug] Kill a session: set status to 'done', optionally delete from store.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Session key to kill" },
+          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
+          deleteFromStore: { type: "boolean", description: "If true, remove entry entirely. Default: false (just marks done)." },
+        },
+        required: ["sessionKey"],
+      },
+      async execute(_id, params) {
+        const { sessionKey, deleteFromStore = false } = params;
+        const agents = params.agentId ? [params.agentId] : listAgentIds();
+
+        for (const aid of agents) {
+          const store = readStore(aid);
+          if (!store[sessionKey]) continue;
+
+          const before = { status: store[sessionKey].status, updatedAt: store[sessionKey].updatedAt };
+
+          if (deleteFromStore) {
+            delete store[sessionKey];
+          } else {
+            store[sessionKey].status = "done";
+            store[sessionKey].endedAt = Date.now();
+            store[sessionKey].updatedAt = Date.now();
+          }
+
+          const storePath = join(AGENTS_DIR, aid, "sessions", "sessions.json");
+          writeFileSync(storePath, JSON.stringify(store, null, 2));
+
+          return ok({
+            ok: true,
+            agentId: aid,
+            sessionKey,
+            action: deleteFromStore ? "deleted" : "marked-done",
+            before,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        return ok({ ok: false, error: "Session not found", sessionKey });
+      },
+    });
+
+    // ─── _ms_link_session ──────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_link_session",
+      description: "[debug] Link a session to a Discord thread by patching deliveryContext.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Session key to link" },
+          threadId: { type: "string", description: "Discord thread ID to link to" },
+          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
+        },
+        required: ["sessionKey", "threadId"],
+      },
+      async execute(_id, params) {
+        const { sessionKey, threadId } = params;
+        const agents = params.agentId ? [params.agentId] : listAgentIds();
+
+        for (const aid of agents) {
+          const store = readStore(aid);
+          if (!store[sessionKey]) continue;
+
+          const before = store[sessionKey].deliveryContext;
+          Object.assign(store[sessionKey], {
+            deliveryContext: { channel: "discord", to: `channel:${threadId}`, accountId: "default", threadId },
+            lastChannel: "discord", lastTo: `channel:${threadId}`,
+            lastAccountId: "default", lastThreadId: threadId,
+            channel: "discord", chatType: "channel",
+            updatedAt: Date.now(),
+          });
+
+          const storePath = join(AGENTS_DIR, aid, "sessions", "sessions.json");
+          writeFileSync(storePath, JSON.stringify(store, null, 2));
+
+          return ok({
+            ok: true, agentId: aid, sessionKey, threadId,
+            before: before || null,
+            after: store[sessionKey].deliveryContext,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        return ok({ ok: false, error: "Session not found", sessionKey });
+      },
+    });
+
+    // ─── _ms_unlink_session ────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_unlink_session",
+      description: "[debug] Unlink a session from its Discord thread. Clears deliveryContext.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Session key to unlink" },
+          agentId: { type: "string", description: "Agent ID. If omitted, searches all." },
+        },
+        required: ["sessionKey"],
+      },
+      async execute(_id, params) {
+        const { sessionKey } = params;
+        const agents = params.agentId ? [params.agentId] : listAgentIds();
+
+        for (const aid of agents) {
+          const store = readStore(aid);
+          if (!store[sessionKey]) continue;
+
+          const before = store[sessionKey].deliveryContext;
+          store[sessionKey].deliveryContext = {};
+          store[sessionKey].lastChannel = null;
+          store[sessionKey].lastTo = null;
+          store[sessionKey].updatedAt = Date.now();
+
+          const storePath = join(AGENTS_DIR, aid, "sessions", "sessions.json");
+          writeFileSync(storePath, JSON.stringify(store, null, 2));
+
+          return ok({
+            ok: true, agentId: aid, sessionKey,
+            before: before || null,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        return ok({ ok: false, error: "Session not found", sessionKey });
+      },
+    });
+
+    // ─── _ms_focus_thread ──────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_focus_thread",
+      description: "[debug] Focus a Discord thread — write thread binding so messages route to a specific session.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID to focus" },
+          sessionKey: { type: "string", description: "Session key to route to" },
+          agentId: { type: "string", description: "Agent ID that owns the session" },
+        },
+        required: ["threadId", "sessionKey"],
+      },
+      async execute(_id, params) {
+        const { threadId, sessionKey, agentId } = params;
+        const tb = loadThreadBindings();
+
+        const before = tb.bindings[threadId] || null;
+        tb.bindings[threadId] = {
+          sessionKey,
+          agentId: agentId || sessionKey.split(":")[1],
+          focusedAt: Date.now(),
+        };
+
+        writeFileSync(THREAD_BINDINGS_PATH, JSON.stringify(tb, null, 2));
+
+        return ok({
+          ok: true, threadId, sessionKey,
+          before,
+          after: tb.bindings[threadId],
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+
+    // ─── _ms_unfocus_thread ────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_unfocus_thread",
+      description: "[debug] Unfocus a Discord thread — remove thread binding.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID to unfocus" },
+        },
+        required: ["threadId"],
+      },
+      async execute(_id, params) {
+        const { threadId } = params;
+        const tb = loadThreadBindings();
+        const before = tb.bindings[threadId] || null;
+
+        if (!before) return ok({ ok: false, error: "Thread not focused", threadId });
+
+        delete tb.bindings[threadId];
+        writeFileSync(THREAD_BINDINGS_PATH, JSON.stringify(tb, null, 2));
+
+        return ok({ ok: true, threadId, removed: before, timestamp: new Date().toISOString() });
+      },
+    });
+
+    // ─── _ms_wake_session ──────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_wake_session",
+      description: "[debug] Send a message into a session via subagent.run. Creates session if needed.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Session key to wake" },
+          message: { type: "string", description: "Message to send to the session" },
+          deliver: { type: "boolean", description: "Whether to deliver reply to channel. Default: true" },
+          timeoutMs: { type: "number", description: "Wait timeout in ms. Default: 60000. 0 = fire and forget." },
+        },
+        required: ["sessionKey", "message"],
+      },
+      async execute(_id, params) {
+        const { sessionKey, message, deliver = true, timeoutMs = 60000 } = params;
+        logger.info(`wake_session: ${sessionKey}`);
+
+        try {
+          const { runId } = await runtime.subagent.run({
+            sessionKey, message, deliver,
+            idempotencyKey: crypto.randomUUID(),
+          });
+
+          if (timeoutMs === 0) {
+            return ok({ ok: true, runId, sessionKey, status: "accepted", timestamp: new Date().toISOString() });
+          }
+
+          try {
+            const result = await runtime.subagent.waitForRun({ runId, timeoutMs });
+            return ok({
+              ok: true, runId, sessionKey,
+              status: result?.status || "unknown",
+              hasReply: !!result?.reply,
+              replyPreview: result?.reply?.substring(0, 500),
+              timestamp: new Date().toISOString(),
+            });
+          } catch (e) {
+            return ok({ ok: true, runId, sessionKey, status: "timeout", error: e.message, timestamp: new Date().toISOString() });
+          }
+        } catch (e) {
+          return ok({ ok: false, sessionKey, error: e.message, timestamp: new Date().toISOString() });
+        }
+      },
+    });
+
+    // ─── _ms_bootstrap_session ─────────────────────────────────────
+    api.registerTool({
+      name: "_ms_bootstrap_session",
+      description: "[debug] Create a fresh session entry in an agent's store with Discord deliveryContext. Does NOT run the session.",
+      parameters: {
+        type: "object",
+        properties: {
+          agentId: { type: "string", description: "Agent ID to create session under" },
+          threadId: { type: "string", description: "Discord thread ID to bind to" },
+          sessionKey: { type: "string", description: "Custom session key. Default: agent:<agentId>:discord:channel:<threadId>" },
+        },
+        required: ["agentId", "threadId"],
+      },
+      async execute(_id, params) {
+        const { agentId, threadId } = params;
+        const sessionKey = params.sessionKey || `agent:${agentId}:discord:channel:${threadId}`;
+
+        const store = readStore(agentId);
+        const existed = !!store[sessionKey];
+
+        store[sessionKey] = {
+          sessionId: store[sessionKey]?.sessionId || crypto.randomUUID(),
+          status: "idle",
+          deliveryContext: { channel: "discord", to: `channel:${threadId}`, accountId: "default", threadId },
+          lastChannel: "discord",
+          lastTo: `channel:${threadId}`,
+          lastAccountId: "default",
+          lastThreadId: threadId,
+          channel: "discord",
+          chatType: "channel",
+          updatedAt: Date.now(),
+          startedAt: Date.now(),
+          totalTokens: 0,
+          ...(store[sessionKey] || {}), // preserve existing fields if updating
+          // Always overwrite these
+          deliveryContext: { channel: "discord", to: `channel:${threadId}`, accountId: "default", threadId },
+          lastChannel: "discord",
+          lastTo: `channel:${threadId}`,
+          updatedAt: Date.now(),
+        };
+
+        const storePath = join(AGENTS_DIR, agentId, "sessions", "sessions.json");
+        writeFileSync(storePath, JSON.stringify(store, null, 2));
+
+        return ok({
+          ok: true, agentId, threadId, sessionKey,
+          action: existed ? "updated" : "created",
+          deliveryContext: store[sessionKey].deliveryContext,
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+
+    // ╔══════════════════════════════════════════════════════════════╗
     // ║  LAYER 2: Agent tools (mindset_*)                          ║
     // ╚══════════════════════════════════════════════════════════════╝
 
