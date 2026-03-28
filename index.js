@@ -1736,79 +1736,336 @@ export default {
       },
     });
 
+    // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 2: Composed operations                              ║
+    // ║  Combine atoms. No workflow opinions.                      ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    // ─── ms_post_as ────────────────────────────────────────────────
+    // Invoke any tool as a specific session via /tools/invoke.
+    // The cross-session action primitive. Component interactions
+    // register under the target session.
     api.registerTool({
-      name: "mindset_session_probe",
-      description: "Probe session store capabilities. Tests: list sessions, read store, check subagent API. Returns raw findings.",
+      name: "ms_post_as",
+      description: "Invoke a tool as a specific session via Gateway API. For posting interactive components owned by a mindset session, or any cross-session tool call.",
       parameters: {
         type: "object",
         properties: {
-          agentId: { type: "string", description: "Agent ID to probe session store for (e.g. 'main', 'sysadmin'). Defaults to 'main'." },
+          sessionKey: { type: "string", description: "Target session key (e.g. 'agent:sysadmin:discord:channel:12345')" },
+          tool: { type: "string", description: "Tool name to invoke (e.g. 'message')" },
+          args: { type: "object", description: "Tool arguments" },
         },
+        required: ["sessionKey", "tool", "args"],
       },
       async execute(_id, params) {
-        const agentId = params?.agentId || "main";
-        const agents = listAgentIds();
-        const byAgent = {};
-        for (const aid of agents) byAgent[aid] = Object.keys(readStore(aid)).length;
-        return ok({
-          agentId, timestamp: new Date().toISOString(),
-          agents: byAgent,
-          subagentMethods: Object.getOwnPropertyNames(runtime.subagent)
-            .filter(k => typeof runtime.subagent[k] === "function"),
-        });
+        const { sessionKey, tool, args } = params;
+        try {
+          const result = await invokeToolAsSession(sessionKey, tool, args);
+          return ok({ ok: true, sessionKey, tool, result: result?.result || result });
+        } catch (e) {
+          return ok({ ok: false, sessionKey, tool, error: e.message });
+        }
       },
     });
 
+    // ─── ms_ensure_session ─────────────────────────────────────────
+    // Idempotent: make sure a thread has a working session.
+    // If session exists with correct DC, returns it.
+    // If session exists with wrong/missing DC, patches it.
+    // If no session, bootstraps one.
     api.registerTool({
-      name: "mindset_create_task",
-      description: "TEST: Create a task session in a target agent's forum thread. Patches deliveryContext for Discord routing. Returns session key and delivery status.",
+      name: "ms_ensure_session",
+      description: "Idempotent: ensure a thread has a working session with correct deliveryContext. Creates if missing, patches if wrong.",
       parameters: {
         type: "object",
         properties: {
-          agentId: { type: "string", description: "Target agent ID (e.g. 'sysadmin')" },
-          threadId: { type: "string", description: "Discord thread ID to bind the session to" },
-          message: { type: "string", description: "Task instructions for the agent" },
+          agentId: { type: "string", description: "Agent ID that should own the session" },
+          threadId: { type: "string", description: "Discord thread ID" },
         },
-        required: ["agentId", "threadId", "message"],
+        required: ["agentId", "threadId"],
       },
       async execute(_id, params) {
-        const { agentId, threadId, message } = params || {};
-        if (!agentId || !threadId || !message) return ok({ error: "Missing required params" });
-
-        logger.info(`create_task: agentId=${agentId} threadId=${threadId}`);
+        const { agentId, threadId } = params;
         const sessionKey = `agent:${agentId}:discord:channel:${threadId}`;
-        const results = { agentId, threadId, sessionKey, timestamp: new Date().toISOString(), steps: {} };
+        const expectedDC = { channel: "discord", to: `channel:${threadId}`, accountId: "default", threadId };
 
-        try {
-          const store = readStore(agentId);
-          const storePath = join(AGENTS_DIR, agentId, "sessions", "sessions.json");
-          if (!store[sessionKey]) store[sessionKey] = { sessionId: sessionKey, updatedAt: Date.now() };
-          Object.assign(store[sessionKey], {
-            deliveryContext: { channel: "discord", to: `channel:${threadId}`, accountId: "default", threadId },
+        const store = readStore(agentId);
+        const existing = store[sessionKey];
+
+        if (existing) {
+          const dc = existing.deliveryContext || {};
+          if (dc.channel === "discord" && dc.to === `channel:${threadId}`) {
+            // Already correct
+            return ok({
+              ok: true, action: "verified", sessionKey, agentId, threadId,
+              status: existing.status || "unknown",
+              totalTokens: existing.totalTokens || 0,
+              hasTranscript: !!existing.sessionFile,
+            });
+          }
+          // Exists but DC is wrong — patch it
+          Object.assign(existing, {
+            deliveryContext: expectedDC,
             lastChannel: "discord", lastTo: `channel:${threadId}`,
             lastAccountId: "default", lastThreadId: threadId,
             channel: "discord", chatType: "channel", updatedAt: Date.now(),
           });
+          const storePath = join(AGENTS_DIR, agentId, "sessions", "sessions.json");
           writeFileSync(storePath, JSON.stringify(store, null, 2));
-          results.steps.patchStore = { ok: true };
-        } catch (e) {
-          results.steps.patchStore = { ok: false, error: e.message };
-          return ok(results);
+          return ok({
+            ok: true, action: "patched", sessionKey, agentId, threadId,
+            reason: "deliveryContext was missing or incorrect",
+          });
         }
 
+        // Doesn't exist — bootstrap
+        store[sessionKey] = {
+          sessionId: crypto.randomUUID(),
+          status: "idle",
+          deliveryContext: expectedDC,
+          lastChannel: "discord", lastTo: `channel:${threadId}`,
+          lastAccountId: "default", lastThreadId: threadId,
+          channel: "discord", chatType: "channel",
+          updatedAt: Date.now(), startedAt: Date.now(), totalTokens: 0,
+        };
+        const storePath = join(AGENTS_DIR, agentId, "sessions", "sessions.json");
+        writeFileSync(storePath, JSON.stringify(store, null, 2));
+        return ok({
+          ok: true, action: "created", sessionKey, agentId, threadId,
+        });
+      },
+    });
+
+    // ─── ms_ensure_closed ──────────────────────────────────────────
+    // Idempotent: make sure a thread is fully closed.
+    // Archives + locks thread. Kills session if it exists.
+    api.registerTool({
+      name: "ms_ensure_closed",
+      description: "Idempotent: ensure a thread is fully closed (archived+locked) and its session is killed.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID" },
+          tagId: { type: "string", description: "Optional tag to apply (e.g. Done or Canceled tag ID)" },
+        },
+        required: ["threadId"],
+      },
+      async execute(_id, params) {
+        const { threadId, tagId } = params;
+        const results = { threadId, steps: {} };
+
+        // Step 1: Close thread (archive + lock)
         try {
-          const { runId } = await runtime.subagent.run({
-            sessionKey, message, deliver: true, idempotencyKey: crypto.randomUUID(),
-          });
-          results.steps.run = { ok: true, runId };
-          const store2 = readStore(agentId);
-          results.steps.dcSurvived = { ok: store2[sessionKey]?.deliveryContext?.to === `channel:${threadId}` };
+          const patch = { archived: true, locked: true };
+          if (tagId) patch.applied_tags = [tagId];
+          const ch = await patchThread(threadId, patch);
+          results.steps.thread = {
+            ok: true,
+            archived: ch.thread_metadata?.archived,
+            locked: ch.thread_metadata?.locked,
+          };
+        } catch (e) {
+          results.steps.thread = { ok: false, error: e.message };
+        }
+
+        // Step 2: Kill any sessions for this thread
+        const killed = [];
+        for (const agentId of listAgentIds()) {
+          const store = readStore(agentId);
+          let changed = false;
+          for (const [key, v] of Object.entries(store)) {
+            if (key.includes(threadId) || v.deliveryContext?.threadId === threadId) {
+              if (v.status !== "done") {
+                store[key].status = "done";
+                store[key].endedAt = Date.now();
+                store[key].updatedAt = Date.now();
+                changed = true;
+                killed.push({ agentId, key });
+              }
+            }
+          }
+          if (changed) {
+            const storePath = join(AGENTS_DIR, agentId, "sessions", "sessions.json");
+            writeFileSync(storePath, JSON.stringify(store, null, 2));
+          }
+        }
+        results.steps.sessions = { ok: true, killed: killed.length, details: killed };
+
+        return ok({ ok: true, ...results });
+      },
+    });
+
+    // ─── ms_diff ───────────────────────────────────────────────────
+    // Orphan finder: threads without sessions + sessions without threads.
+    // Works both directions across all forums.
+    api.registerTool({
+      name: "ms_diff",
+      description: "Find orphans: threads without sessions and sessions without threads. Checks all forums.",
+      parameters: {
+        type: "object",
+        properties: {
+          mindset: { type: "string", description: "Filter by agent ID. Omit for all." },
+        },
+      },
+      async execute(_id, params) {
+        const { mindset } = params || {};
+        const config = loadConfig();
+        const guildId = Object.keys(config.channels?.discord?.guilds || {})[0];
+        if (!guildId) return ok({ ok: false, error: "No guild configured" });
+
+        const bindings = (config.bindings || [])
+          .filter(b => b.match?.peer?.kind === "channel")
+          .filter(b => !mindset || b.agentId === mindset);
+
+        const orphanThreads = []; // threads with no session
+        const orphanSessions = []; // sessions with no thread
+
+        for (const binding of bindings) {
+          const forumId = binding.match.peer.id;
+          const agentId = binding.agentId;
+
+          // Get all thread IDs from Discord
+          const threadIds = new Set();
           try {
-            const result = await runtime.subagent.waitForRun({ runId, timeoutMs: 90000 });
-            results.steps.wait = { ok: true, status: result?.status, replyPreview: result?.reply?.substring(0, 300) };
-          } catch (e) { results.steps.wait = { ok: false, error: e.message }; }
-        } catch (e) { results.steps.run = { ok: false, error: e.message }; }
-        return ok(results);
+            const { active, archived } = await listForumThreads(guildId, forumId);
+            for (const t of [...active, ...archived]) {
+              threadIds.add(t.id);
+              // Only open threads without sessions are orphans
+              // Closed (archived) threads without sessions are just dead — not orphans
+              const isArchived = t.thread_metadata?.archived || false;
+              if (!isArchived) {
+                const sessionKey = `agent:${agentId}:discord:channel:${t.id}`;
+                const store = readStore(agentId);
+                if (!store[sessionKey]) {
+                  orphanThreads.push({
+                    agentId, threadId: t.id, name: t.name,
+                    messageCount: t.message_count || 0,
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            // Skip forums we can't read
+            continue;
+          }
+
+          // Check for sessions without threads
+          const store = readStore(agentId);
+          for (const [key, v] of Object.entries(store)) {
+            if (!key.includes("discord:channel:")) continue;
+            const tid = key.split("discord:channel:")[1]?.split(":")[0];
+            if (!tid) continue;
+            // Skip non-forum sessions (main channel, etc.)
+            if (tid === forumId) continue;
+            // Only check sessions that look like they belong to this forum
+            if (v.deliveryContext?.threadId && !threadIds.has(v.deliveryContext.threadId)) {
+              orphanSessions.push({
+                agentId, key, threadId: v.deliveryContext.threadId,
+                status: v.status, totalTokens: v.totalTokens || 0,
+              });
+            }
+          }
+        }
+
+        return ok({
+          ok: true,
+          orphanThreads: { count: orphanThreads.length, items: orphanThreads },
+          orphanSessions: { count: orphanSessions.length, items: orphanSessions },
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+
+    // ─── ms_recover ──────────────────────────────────────────────
+    // Find zombie/aborted sessions and re-wake them.
+    // For restart recovery: gateway bounced, sessions died mid-turn.
+    // Scans all agents for sessions that need attention, optionally wakes them.
+    api.registerTool({
+      name: "ms_recover",
+      description: "Find zombie/aborted sessions across all agents. Optionally re-wake them. For restart recovery.",
+      parameters: {
+        type: "object",
+        properties: {
+          wake: { type: "boolean", description: "If true, re-wake recoverable sessions. Default: false (dry run)." },
+          mindset: { type: "string", description: "Filter by agent ID. Omit for all." },
+          maxAge: { type: "number", description: "Only recover sessions updated within this many hours. Default: 24." },
+        },
+      },
+      async execute(_id, params) {
+        const { wake = false, mindset, maxAge = 24 } = params || {};
+        const cutoff = Date.now() - (maxAge * 60 * 60 * 1000);
+        const agents = mindset ? [mindset] : listAgentIds();
+        const fb = getForumBindings();
+
+        const candidates = [];
+
+        for (const agentId of agents) {
+          // Only check agents with forum bindings (mindsets)
+          if (!fb[agentId]) continue;
+
+          const store = readStore(agentId);
+          for (const [key, v] of Object.entries(store)) {
+            // Only discord thread sessions
+            if (!key.includes("discord:channel:")) continue;
+            const threadId = key.split("discord:channel:")[1]?.split(":")[0];
+            if (!threadId) continue;
+
+            // Skip if too old
+            if ((v.updatedAt || 0) < cutoff) continue;
+
+            // Check if it needs recovery
+            const needs = [];
+            if (v.abortedLastRun) needs.push("aborted");
+            if (v.status === "running" && v.updatedAt && (Date.now() - v.updatedAt) > 10 * 60 * 1000) {
+              needs.push("zombie"); // running but stale >10min
+            }
+
+            if (needs.length === 0) continue;
+
+            candidates.push({
+              agentId,
+              key,
+              threadId,
+              status: v.status,
+              needs,
+              totalTokens: v.totalTokens || 0,
+              updatedAgo: timeAgo(v.updatedAt),
+              hasDelivery: v.deliveryContext?.channel === "discord" && !!v.deliveryContext?.to,
+              hasTranscript: !!v.sessionFile,
+            });
+          }
+        }
+
+        // Optionally wake them
+        const wakeResults = [];
+        if (wake && candidates.length > 0) {
+          for (const c of candidates) {
+            if (!c.hasDelivery) {
+              wakeResults.push({ key: c.key, skipped: true, reason: "no discord delivery context" });
+              continue;
+            }
+            try {
+              const { runId } = await runtime.subagent.run({
+                sessionKey: c.key,
+                message: "You were interrupted by a gateway restart. Review your last conversation and continue where you left off. If you were waiting for input, say so.",
+                deliver: true,
+                idempotencyKey: crypto.randomUUID(),
+              });
+              wakeResults.push({ key: c.key, ok: true, runId });
+            } catch (e) {
+              wakeResults.push({ key: c.key, ok: false, error: e.message });
+            }
+          }
+        }
+
+        return ok({
+          ok: true,
+          dryRun: !wake,
+          candidateCount: candidates.length,
+          candidates,
+          ...(wake ? { wakeResults } : {}),
+          timestamp: new Date().toISOString(),
+        });
       },
     });
 
