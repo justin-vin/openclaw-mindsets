@@ -19,6 +19,9 @@ const OPENCLAW_HOME = process.env.OPENCLAW_HOME || `${process.env.HOME}/.opencla
 const AGENTS_DIR = join(OPENCLAW_HOME, "agents");
 const THREAD_BINDINGS_PATH = join(OPENCLAW_HOME, "discord", "thread-bindings.json");
 
+// Module-level logger — set in register(), used by shared functions outside register()
+let _logger = null;
+
 // ════════════════════════════════════════════════════════════════════
 //  PRIMITIVES — config, store, Discord API
 // ════════════════════════════════════════════════════════════════════
@@ -70,9 +73,11 @@ async function discordApi(method, path, body) {
     headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
   };
   if (body) opts.body = JSON.stringify(body);
+  if (_logger) _logger.debug(`discordApi: ${method} ${path}`);
   const res = await fetch(`https://discord.com/api/v10${path}`, opts);
   if (!res.ok) {
     const text = await res.text();
+    if (_logger) _logger.warn(`discordApi: ${method} ${path} failed ${res.status}`, { body: text.substring(0, 200) });
     throw new Error(`Discord API ${res.status}: ${text}`);
   }
   if (method === "DELETE" || res.status === 204) return {};
@@ -87,10 +92,10 @@ async function discordApi(method, path, body) {
 
 function mindsetLabel(id) {
   const labels = {
-    sysadmin: "Sysadmin",
-    "design-engineer": "Design Engineer",
-    pa: "PA",
-    wordware: "Wordware",
+    sysadmin: "Sysadmin Mindset",
+    "design-engineer": "Design Engineer Mindset",
+    pa: "PA Mindset",
+    wordware: "Wordware Mindset",
     main: "Main",
   };
   return labels[id] || id;
@@ -242,11 +247,13 @@ function ensureSession(agentId, threadId) {
   if (existing) {
     const dc = existing.deliveryContext || {};
     if (dc.channel === "discord" && dc.to === `channel:${threadId}`) {
+      if (_logger) _logger.debug(`ensureSession: verified existing session`, { agentId, threadId });
       return { action: "verified", sessionKey, agentId, threadId,
         status: existing.status || "unknown", totalTokens: existing.totalTokens || 0,
         hasTranscript: !!existing.sessionFile };
     }
     // Patch wrong DC
+    if (_logger) _logger.info(`ensureSession: patching wrong deliveryContext`, { agentId, threadId });
     Object.assign(existing, {
       deliveryContext: expectedDC,
       lastChannel: "discord", lastTo: `channel:${threadId}`,
@@ -258,6 +265,7 @@ function ensureSession(agentId, threadId) {
   }
 
   // Create new
+  if (_logger) _logger.info(`ensureSession: creating new session`, { agentId, threadId, sessionKey });
   store[sessionKey] = {
     sessionId: crypto.randomUUID(), status: "idle",
     deliveryContext: expectedDC,
@@ -272,14 +280,17 @@ function ensureSession(agentId, threadId) {
 
 /** Idempotent: close thread + kill all sessions for it. */
 async function ensureClosed(threadId, tagId) {
+  if (_logger) _logger.info(`ensureClosed: closing thread`, { threadId, tagId });
   const results = { threadId, steps: {} };
 
   try {
     const patch = { archived: true, locked: true };
     if (tagId) patch.applied_tags = [tagId];
     const ch = await patchThread(threadId, patch);
+    if (_logger) _logger.info(`ensureClosed: thread archived+locked`, { threadId });
     results.steps.thread = { ok: true, archived: ch.thread_metadata?.archived, locked: ch.thread_metadata?.locked };
   } catch (e) {
+    if (_logger) _logger.warn(`ensureClosed: failed to archive thread`, { threadId, error: e.message });
     results.steps.thread = { ok: false, error: e.message };
   }
 
@@ -298,6 +309,7 @@ async function ensureClosed(threadId, tagId) {
     }
     if (changed) writeStore(agentId, store);
   }
+  if (_logger) _logger.info(`ensureClosed: killed ${killed.length} sessions`, { threadId });
   results.steps.sessions = { ok: true, killed: killed.length, details: killed };
 
   // Remove all users from thread so it disappears from sidebars
@@ -309,8 +321,10 @@ async function ensureClosed(threadId, tagId) {
     for (const userId of users) {
       try { await discordApi("DELETE", `/channels/${threadId}/thread-members/${userId}`); } catch {}
     }
+    if (_logger) _logger.debug(`ensureClosed: unfollowed ${users.length} users`, { threadId });
     results.steps.unfollowed = { ok: true, users: users.length };
   } catch (e) {
+    if (_logger) _logger.warn(`ensureClosed: failed to unfollow users`, { threadId, error: e.message });
     results.steps.unfollowed = { ok: false, error: e.message };
   }
 
@@ -319,8 +333,12 @@ async function ensureClosed(threadId, tagId) {
 
 /** Kill a single session. Returns result object. */
 function killSession(sessionKey, agentId, deleteFromStore = false) {
+  if (_logger) _logger.info(`killSession: killing session`, { sessionKey, deleteFromStore });
   const found = findSession(sessionKey, agentId);
-  if (!found) return { ok: false, error: "Session not found", sessionKey };
+  if (!found) {
+    if (_logger) _logger.warn(`killSession: session not found`, { sessionKey });
+    return { ok: false, error: "Session not found", sessionKey };
+  }
 
   const { agentId: aid, store } = found;
   const before = { status: store[sessionKey].status, updatedAt: store[sessionKey].updatedAt };
@@ -333,6 +351,7 @@ function killSession(sessionKey, agentId, deleteFromStore = false) {
     store[sessionKey].updatedAt = Date.now();
   }
   writeStore(aid, store);
+  if (_logger) _logger.info(`killSession: done`, { sessionKey, action: deleteFromStore ? "deleted" : "marked-done" });
 
   return { ok: true, agentId: aid, sessionKey, action: deleteFromStore ? "deleted" : "marked-done", before, timestamp: new Date().toISOString() };
 }
@@ -385,6 +404,7 @@ function patchSessionFields(sessionKey, patch, agentId) {
 
 /** Bootstrap a fresh session entry. */
 function bootstrapSession(agentId, threadId, customKey) {
+  if (_logger) _logger.info(`bootstrapSession: bootstrapping`, { agentId, threadId, customKey });
   const sessionKey = customKey || sessionKeyFor(agentId, threadId);
   const store = readStore(agentId);
   const existed = !!store[sessionKey];
@@ -407,8 +427,12 @@ function bootstrapSession(agentId, threadId, customKey) {
 
 /** Reset a session: delete transcript, reset counters, keep identity. */
 function resetSession(sessionKey, agentId) {
+  if (_logger) _logger.info(`resetSession: resetting`, { sessionKey });
   const found = findSession(sessionKey, agentId);
-  if (!found) return { ok: false, error: "Session not found", sessionKey };
+  if (!found) {
+    if (_logger) _logger.warn(`resetSession: session not found`, { sessionKey });
+    return { ok: false, error: "Session not found", sessionKey };
+  }
 
   const { agentId: aid, store } = found;
   const entry = store[sessionKey];
@@ -673,18 +697,23 @@ export default {
   register(api) {
     const runtime = api.runtime;
     const logger = api.logger;
+    _logger = logger; // Set module-level logger for shared functions
     logger.info("openclaw-mindsets: registering");
 
     // Runtime-dependent shared functions (must be inside register() for request scope)
     async function wakeSession(sessionKey, message, deliver = true, timeoutMs = 60000) {
+      logger.info(`wakeSession: waking`, { sessionKey, deliver, timeoutMs });
       const { runId } = await runtime.subagent.run({
         sessionKey, message, deliver, idempotencyKey: crypto.randomUUID(),
       });
+      logger.info(`wakeSession: run started`, { sessionKey, runId });
       if (timeoutMs === 0) return { ok: true, runId, sessionKey, status: "accepted" };
       try {
         const result = await runtime.subagent.waitForRun({ runId, timeoutMs });
+        logger.info(`wakeSession: run completed`, { sessionKey, runId, status: result?.status || "unknown" });
         return { ok: true, runId, sessionKey, status: result?.status || "unknown", hasReply: !!result?.reply, replyPreview: result?.reply?.substring(0, 500) };
       } catch (e) {
+        logger.warn(`wakeSession: timed out`, { sessionKey, runId, error: e.message });
         return { ok: true, runId, sessionKey, status: "timeout", error: e.message };
       }
     }
@@ -959,28 +988,28 @@ export default {
         const humanId = getHumanId();
         const mention = humanId ? `<@${humanId}>` : "";
 
-        // Create thread with styled delegation header
+        // Create thread — just the mention to pull Dom into sidebar
         let threadId;
         try {
           const thread = await discordApi("POST", `/channels/${forumId}/threads`, {
             name: title,
-            message: { content: `${mention} ${brief}` },
+            message: { content: mention || "New task" },
           });
           threadId = thread.id;
 
-          // Post styled delegation card
-          const color = parseInt("5865F2", 16); // blurple
+          // Post styled delegation card with the actual brief
+          const color = parseInt("5865F2", 16);
           await discordApi("POST", `/channels/${threadId}/messages`, {
             components: [{
               type: 17, accent_color: color,
               components: [
-                { type: 10, content: `📋 → **${mindsetLabel(mindset)}**` },
-                { type: 14 }, // separator
+                { type: 10, content: `→ **${mindsetLabel(mindset)}**` },
+                { type: 14 },
                 { type: 10, content: brief },
               ],
             }],
             flags: 32768,
-          }).catch(() => {}); // non-critical
+          }).catch(() => {});
         } catch (e) {
           return ok({ ok: false, error: e.message });
         }
@@ -1075,7 +1104,7 @@ export default {
               components: [{
                 type: 17, accent_color: color,
                 components: [
-                  { type: 10, content: `👋 → **${mindsetLabel(agentId)}**` },
+                  { type: 10, content: `→ **${mindsetLabel(agentId)}**` },
                   { type: 14 },
                   { type: 10, content: msg },
                 ],
@@ -1085,12 +1114,12 @@ export default {
           } catch {} // non-critical
         }
 
-        // Wake session with same message
+        // Wake session — reply goes to thread via deliveryContext
         try {
           const result = await wakeSession(sessionKey, msg, true, 0);
           return ok({ ok: true, sessionKey, runId: result.runId });
         } catch (e) {
-          return ok({ ok: false, error: e.message });
+          return ok({ ok: false, error: e.message, hint: "Session may have stale transcript. Try closing and re-delegating." });
         }
       },
     });
