@@ -1,18 +1,21 @@
 /**
- * openclaw-mindsets — Multiple AI mindsets, one identity.
+ * openclaw-mindsets — OpenClaw extension for Discord.
+ * Multiple agents acting as one.
  *
- * Architecture:
- *   Primitives   — config, store, Discord API
- *   Shared       — reusable functions (the library)
- *   L1 (_ms_*)   — debug tools, thin wrappers
- *   L2 (ms_*)    — composed operations
- *   L3 (ms3_*)   — coordination primitives
- *   L4           — agent-facing (delegate, board, query, nudge, close)
+ * 8 tools:
+ *   delegate  — give work to a mindset
+ *   board     — see everything active
+ *   query     — ask a mindset silently
+ *   nudge     — wake a stale session
+ *   close     — shut down a task
+ *   health    — system health on heartbeat
+ *   inspect   — deep dive on one thread
+ *   recover   — restart recovery
  */
 import { readFileSync, writeFileSync, readdirSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
-const OPENCLAW_HOME = "/Users/justin/.openclaw";
+const OPENCLAW_HOME = process.env.OPENCLAW_HOME || `${process.env.HOME}/.openclaw`;
 const AGENTS_DIR = join(OPENCLAW_HOME, "agents");
 const THREAD_BINDINGS_PATH = join(OPENCLAW_HOME, "discord", "thread-bindings.json");
 
@@ -285,6 +288,21 @@ async function ensureClosed(threadId, tagId) {
     if (changed) writeStore(agentId, store);
   }
   results.steps.sessions = { ok: true, killed: killed.length, details: killed };
+
+  // Remove all users from thread so it disappears from sidebars
+  try {
+    const config = loadConfig();
+    const guilds = config.channels?.discord?.guilds || {};
+    const guildId = Object.keys(guilds)[0];
+    const users = guilds[guildId]?.users || [];
+    for (const userId of users) {
+      try { await discordApi("DELETE", `/channels/${threadId}/thread-members/${userId}`); } catch {}
+    }
+    results.steps.unfollowed = { ok: true, users: users.length };
+  } catch (e) {
+    results.steps.unfollowed = { ok: false, error: e.message };
+  }
+
   return results;
 }
 
@@ -640,7 +658,7 @@ function readTranscript(sessionKey, limit = 10, agentId) {
 export default {
   id: "openclaw-mindsets",
   name: "OpenClaw Mindsets",
-  description: "Multiple AI mindsets, one identity.",
+  description: "OpenClaw extension for Discord. Multiple agents acting as one.",
   register(api) {
     const runtime = api.runtime;
     const logger = api.logger;

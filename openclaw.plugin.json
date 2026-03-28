@@ -1,7 +1,7 @@
 {
   "id": "openclaw-mindsets",
   "name": "OpenClaw Mindsets",
-  "description": "Multiple AI mindsets, one identity. Multi-agent orchestration via Discord forum threads.",
+  "description": "OpenClaw extension for Discord. Multiple agents acting as one.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false
