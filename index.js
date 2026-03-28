@@ -1,22 +1,134 @@
 /**
- * openclaw-mindsets — extension for multi-agent orchestration
+ * openclaw-mindsets — Multiple AI mindsets, one identity.
  *
- * First-principles approach to autonomous cross-thread task creation.
+ * Layer 1: Debug tools (_ms_*) — granular atomic reads, undocumented
+ * Layer 2: Agent tools (mindset_*) — semantic composed operations
  */
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
 
 const OPENCLAW_HOME = "/Users/justin/.openclaw";
+const AGENTS_DIR = join(OPENCLAW_HOME, "agents");
+const THREAD_BINDINGS_PATH = join(OPENCLAW_HOME, "discord", "thread-bindings.json");
+
+// ── Primitives ─────────────────────────────────────────────────────
+
+function loadConfig() {
+  return JSON.parse(readFileSync(join(OPENCLAW_HOME, "openclaw.json"), "utf-8"));
+}
+
+function loadThreadBindings() {
+  try { return JSON.parse(readFileSync(THREAD_BINDINGS_PATH, "utf-8")); }
+  catch { return { version: 1, bindings: {} }; }
+}
+
+function listAgentIds() {
+  try {
+    return readdirSync(AGENTS_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory()).map(d => d.name);
+  } catch { return []; }
+}
 
 function readStore(agentId) {
-  const fs = require("fs");
-  const path = require("path");
-  const storePath = path.join(OPENCLAW_HOME, "agents", agentId, "sessions", "sessions.json");
-  return { store: JSON.parse(fs.readFileSync(storePath, "utf-8")), storePath };
+  const p = join(AGENTS_DIR, agentId, "sessions", "sessions.json");
+  try { return JSON.parse(readFileSync(p, "utf-8")); }
+  catch { return {}; }
 }
 
-function writeStore(storePath, store) {
-  const fs = require("fs");
-  fs.writeFileSync(storePath, JSON.stringify(store, null, 2));
+function getForumBindings() {
+  const config = loadConfig();
+  const result = {};
+  for (const b of (config.bindings || [])) {
+    const peer = b.match?.peer;
+    if (peer?.kind === "channel" && b.agentId) {
+      result[b.agentId] = peer.id;
+      result[`forum:${peer.id}`] = b.agentId; // reverse lookup
+    }
+  }
+  return result;
 }
+
+function allSessions() {
+  const result = [];
+  for (const agentId of listAgentIds()) {
+    const store = readStore(agentId);
+    for (const [key, entry] of Object.entries(store)) {
+      result.push({ agentId, key, ...entry });
+    }
+  }
+  return result;
+}
+
+function classifySession(key, entry) {
+  if (key.endsWith(":main")) return "main";
+  if (key.includes(":subagent:")) return "subagent";
+  if (key.includes(":cron:")) return "cron";
+  if (key.includes(":discord:channel:")) return "discord-thread";
+  if (key.includes(":discord:")) return "discord-other";
+  return "other";
+}
+
+function timeAgo(ts) {
+  if (!ts) return "unknown";
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function formatSession(key, v, agentId) {
+  const kind = classifySession(key, v);
+  const base = {
+    key,
+    agent: agentId,
+    kind,
+    status: v.status || "unknown",
+    totalTokens: v.totalTokens || 0,
+    model: v.model || null,
+    updatedAt: v.updatedAt || 0,
+    updatedAgo: timeAgo(v.updatedAt),
+  };
+
+  // Anomaly flags
+  const flags = [];
+  if (v.abortedLastRun) flags.push("aborted");
+  if (v.status === "running" && v.updatedAt && (Date.now() - v.updatedAt) > 2 * 60 * 60 * 1000) flags.push("zombie");
+  if (v.status === "unknown") flags.push("never-ran");
+  if (kind === "discord-thread") {
+    const dc = v.deliveryContext || {};
+    if (dc.channel === "webchat") flags.push("webchat-delivery");
+    if (dc.channel !== "discord" || !dc.to) flags.push("no-discord-delivery");
+    if (!v.origin) flags.push("no-origin");
+    if ((v.totalTokens || 0) === 0 && v.status !== "running") flags.push("empty");
+  }
+  if (flags.length) base.flags = flags;
+
+  if (kind === "discord-thread") {
+    const threadId = key.split("discord:channel:")[1]?.split(":")[0];
+    base.threadId = threadId;
+    base.deliveryContext = v.deliveryContext || null;
+    base.hasDiscordDelivery = v.deliveryContext?.channel === "discord" && !!v.deliveryContext?.to;
+    base.origin = typeof v.origin === "object" ? v.origin.label : (v.origin || null);
+  }
+  if (kind === "subagent") {
+    base.spawnedBy = v.spawnedBy || null;
+    base.subagentRole = v.subagentRole || null;
+    base.label = v.label || null;
+    base.spawnDepth = v.spawnDepth || null;
+  }
+  if (kind === "cron") {
+    base.label = v.label || null;
+  }
+  return base;
+}
+
+function ok(data) {
+  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+}
+
+// ── Plugin ─────────────────────────────────────────────────────────
 
 export default {
   id: "openclaw-mindsets",
@@ -25,82 +137,502 @@ export default {
   register(api) {
     const runtime = api.runtime;
     const logger = api.logger;
-
     logger.info("openclaw-mindsets: registering");
 
-    // ─── mindset_ping ───────────────────────────────────────────────
+    // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 1: Debug tools (_ms_*)                              ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
+    // ─── _ms_list_agents ───────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_list_agents",
+      description: "[debug] List all agent IDs on disk with session counts.",
+      parameters: { type: "object", properties: {} },
+      async execute(_id) {
+        const fb = getForumBindings();
+        const agents = listAgentIds().map(id => {
+          const store = readStore(id);
+          const keys = Object.keys(store);
+          const byKind = {};
+          for (const k of keys) {
+            const kind = classifySession(k, store[k]);
+            byKind[kind] = (byKind[kind] || 0) + 1;
+          }
+          const active = keys.filter(k => {
+            const s = store[k].status;
+            return s === "running" || s === "idle";
+          });
+          return {
+            id,
+            forumChannelId: fb[id] || null,
+            totalSessions: keys.length,
+            activeSessions: active.length,
+            byKind,
+          };
+        });
+        return ok({ agents, timestamp: new Date().toISOString() });
+      },
+    });
+
+    // ─── _ms_read_store ────────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_read_store",
+      description: "[debug] Read session store for one agent. Filter by channel type.",
+      parameters: {
+        type: "object",
+        properties: {
+          agentId: { type: "string", description: "Agent ID (e.g. 'sysadmin')" },
+          filter: { type: "string", description: "Filter: 'all', 'discord', 'active'. Default: 'discord'" },
+        },
+        required: ["agentId"],
+      },
+      async execute(_id, params) {
+        const { agentId, filter = "discord" } = params;
+        const store = readStore(agentId);
+        const entries = Object.entries(store);
+
+        let filtered;
+        if (filter === "all") filtered = entries;
+        else if (filter === "active") filtered = entries.filter(([, v]) => v.status === "running" || v.status === "idle");
+        else filtered = entries.filter(([k]) => k.includes("discord"));
+
+        const sessions = filtered.map(([key, v]) => formatSession(key, v, agentId));
+        // Sort: running first, then by updatedAt desc
+        sessions.sort((a, b) => {
+          if (a.status === "running" && b.status !== "running") return -1;
+          if (b.status === "running" && a.status !== "running") return 1;
+          return (b.updatedAt || 0) - (a.updatedAt || 0);
+        });
+
+        // Summary
+        const flagged = sessions.filter(s => s.flags?.length > 0);
+        const summary = {
+          total: sessions.length,
+          running: sessions.filter(s => s.status === "running").length,
+          done: sessions.filter(s => s.status === "done").length,
+          idle: sessions.filter(s => s.status === "idle").length,
+          unknown: sessions.filter(s => s.status === "unknown").length,
+          flagged: flagged.length,
+          flags: flagged.length > 0 ? Object.fromEntries(
+            [...new Set(flagged.flatMap(s => s.flags || []))].map(f => [f, flagged.filter(s => s.flags?.includes(f)).length])
+          ) : {},
+        };
+
+        return ok({ agentId, filter, summary, sessions, timestamp: new Date().toISOString() });
+      },
+    });
+
+    // ─── _ms_get_session ───────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_get_session",
+      description: "[debug] Get full session metadata by key. Searches all agents if agentId not specified.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Full session key (e.g. 'agent:sysadmin:discord:channel:12345')" },
+          agentId: { type: "string", description: "Agent ID to search. If omitted, searches all agents." },
+        },
+        required: ["sessionKey"],
+      },
+      async execute(_id, params) {
+        const { sessionKey, agentId } = params;
+        const agents = agentId ? [agentId] : listAgentIds();
+
+        for (const aid of agents) {
+          const store = readStore(aid);
+          if (store[sessionKey]) {
+            const v = store[sessionKey];
+            const tb = loadThreadBindings();
+            const threadId = sessionKey.split("discord:channel:")[1]?.split(":")[0];
+            const isFocused = threadId ? !!tb.bindings?.[threadId] : false;
+            const focusTarget = threadId ? (tb.bindings?.[threadId]?.sessionKey || null) : null;
+
+            return ok({
+              found: true,
+              agentId: aid,
+              sessionKey,
+              kind: classifySession(sessionKey, v),
+              sessionId: v.sessionId,
+              status: v.status || "unknown",
+              deliveryContext: v.deliveryContext || null,
+              hasDiscordDelivery: v.deliveryContext?.channel === "discord" && !!v.deliveryContext?.to,
+              channel: v.channel,
+              chatType: v.chatType,
+              // Thread binding state
+              threadId: threadId || null,
+              isFocused,
+              focusTarget,
+              // Usage
+              totalTokens: v.totalTokens || 0,
+              inputTokens: v.inputTokens || 0,
+              outputTokens: v.outputTokens || 0,
+              cacheRead: v.cacheRead || 0,
+              estimatedCostUsd: v.estimatedCostUsd || 0,
+              model: v.model,
+              modelProvider: v.modelProvider,
+              // Lifecycle
+              updatedAt: v.updatedAt,
+              updatedAgo: timeAgo(v.updatedAt),
+              startedAt: v.startedAt,
+              endedAt: v.endedAt,
+              runtimeMs: v.runtimeMs,
+              compactionCount: v.compactionCount || 0,
+              abortedLastRun: v.abortedLastRun || false,
+              // Lineage
+              spawnedBy: v.spawnedBy || null,
+              subagentRole: v.subagentRole || null,
+              spawnDepth: v.spawnDepth || null,
+              label: v.label || null,
+              // Identity
+              origin: v.origin || null,
+              lastChannel: v.lastChannel,
+              lastTo: v.lastTo,
+              sessionFile: v.sessionFile,
+              skillsSnapshot: v.skillsSnapshot ? (typeof v.skillsSnapshot === "object" && !Array.isArray(v.skillsSnapshot) ? Object.keys(v.skillsSnapshot) : v.skillsSnapshot) : [],
+            });
+          }
+        }
+        return ok({ found: false, sessionKey, searchedAgents: agents });
+      },
+    });
+
+    // ─── _ms_list_bindings ─────────────────────────────────────────
+    api.registerTool({
+      name: "_ms_list_bindings",
+      description: "[debug] List all forum↔agent bindings from OpenClaw config.",
+      parameters: { type: "object", properties: {} },
+      async execute(_id) {
+        const config = loadConfig();
+        const bindings = (config.bindings || [])
+          .filter(b => b.match?.peer?.kind === "channel")
+          .map(b => ({
+            agentId: b.agentId,
+            forumChannelId: b.match.peer.id,
+            channel: b.match.channel,
+          }));
+
+        // Also include thread bindings (focused threads)
+        const tb = loadThreadBindings();
+        const threadBindings = Object.entries(tb.bindings || {}).map(([threadId, binding]) => ({
+          threadId,
+          ...binding,
+        }));
+
+        // Also check guild config
+        const guilds = config.channels?.discord?.guilds || {};
+        const guildInfo = Object.entries(guilds).map(([guildId, g]) => ({
+          guildId,
+          requireMention: g.requireMention,
+          users: g.users,
+          channelCount: Object.keys(g.channels || {}).length,
+          channels: Object.entries(g.channels || {}).map(([chId, ch]) => ({
+            id: chId,
+            allow: ch.allow,
+            includeThreadStarter: ch.includeThreadStarter,
+          })),
+        }));
+
+        return ok({
+          forumBindings: bindings,
+          threadBindings,
+          threadBindingsVersion: tb.version,
+          guilds: guildInfo,
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+
+    // ─── _ms_find_thread_sessions ──────────────────────────────────
+    api.registerTool({
+      name: "_ms_find_thread_sessions",
+      description: "[debug] Find all sessions across all agents that match a Discord thread ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          threadId: { type: "string", description: "Discord thread ID to search for" },
+        },
+        required: ["threadId"],
+      },
+      async execute(_id, params) {
+        const { threadId } = params;
+        const matches = [];
+
+        for (const agentId of listAgentIds()) {
+          const store = readStore(agentId);
+          for (const [key, v] of Object.entries(store)) {
+            if (key.includes(threadId) ||
+                v.deliveryContext?.threadId === threadId ||
+                v.deliveryContext?.to === `channel:${threadId}`) {
+              matches.push(formatSession(key, v, agentId));
+            }
+          }
+        }
+
+        // Check thread binding state
+        const tb = loadThreadBindings();
+        const focused = tb.bindings?.[threadId] || null;
+
+        // Check if the thread ID is a known forum channel (not a thread)
+        const fb = getForumBindings();
+        const isForumChannel = !!fb[`forum:${threadId}`];
+
+        // Detect anomalies
+        const anomalies = [];
+        const agentSet = new Set(matches.map(m => m.agent));
+        if (agentSet.size > 1) anomalies.push(`multi-agent: sessions in ${[...agentSet].join(", ")}`);
+        const webchat = matches.filter(m => m.deliveryContext?.channel === "webchat");
+        if (webchat.length) anomalies.push(`webchat-delivery: ${webchat.length} session(s) with webchat instead of discord`);
+        const noDelivery = matches.filter(m => !m.hasDiscordDelivery);
+        if (noDelivery.length) anomalies.push(`no-discord-delivery: ${noDelivery.length} session(s) missing discord delivery`);
+
+        return ok({
+          threadId,
+          isForumChannel,
+          forumAgent: isForumChannel ? fb[`forum:${threadId}`] : null,
+          matchCount: matches.length,
+          anomalies: anomalies.length > 0 ? anomalies : null,
+          sessions: matches,
+          focused: focused ? { ...focused } : null,
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+
+    // ─── _ms_health ─────────────────────────────────────────────────
+    // Cross-agent health check — everything wrong in one call
+    api.registerTool({
+      name: "_ms_health",
+      description: "[debug] Cross-agent health check. Shows zombies, orphans, broken delivery, missing transcripts, cost summary.",
+      parameters: { type: "object", properties: {} },
+      async execute(_id) {
+        const fb = getForumBindings();
+        const agents = listAgentIds();
+        const issues = [];
+        const costByAgent = {};
+        const sessionStats = { total: 0, running: 0, done: 0, idle: 0, unknown: 0, flagged: 0 };
+        const threadSessionMap = {}; // threadId -> [sessions]
+
+        for (const agentId of agents) {
+          const store = readStore(agentId);
+          let agentCost = 0;
+
+          for (const [key, v] of Object.entries(store)) {
+            sessionStats.total++;
+            const s = v.status || "unknown";
+            if (s in sessionStats) sessionStats[s]++;
+
+            agentCost += v.estimatedCostUsd || 0;
+
+            // Zombie detection
+            if (s === "running" && v.updatedAt && (Date.now() - v.updatedAt) > 2 * 60 * 60 * 1000) {
+              issues.push({ type: "zombie", agentId, key, updatedAgo: timeAgo(v.updatedAt) });
+              sessionStats.flagged++;
+            }
+
+            // Broken delivery on discord threads
+            if (key.includes("discord:channel:")) {
+              const dc = v.deliveryContext || {};
+              const threadId = key.split("discord:channel:")[1]?.split(":")[0];
+
+              // Track thread -> session mapping
+              if (threadId) {
+                if (!threadSessionMap[threadId]) threadSessionMap[threadId] = [];
+                threadSessionMap[threadId].push({ agentId, key, status: s });
+              }
+
+              if (dc.channel === "webchat") {
+                issues.push({ type: "webchat-delivery", agentId, key, threadId });
+                sessionStats.flagged++;
+              } else if (dc.channel !== "discord" || !dc.to) {
+                issues.push({ type: "no-discord-delivery", agentId, key, threadId });
+                sessionStats.flagged++;
+              }
+
+              // Empty session (created but never ran)
+              if ((v.totalTokens || 0) === 0 && s !== "running" && !v.origin) {
+                issues.push({ type: "orphan-session", agentId, key, threadId, reason: "no tokens, no origin" });
+                sessionStats.flagged++;
+              }
+
+              // Aborted
+              if (v.abortedLastRun) {
+                issues.push({ type: "aborted", agentId, key, threadId });
+                sessionStats.flagged++;
+              }
+
+              // Transcript file missing
+              if (v.sessionFile) {
+                try { readFileSync(v.sessionFile, "utf-8"); }
+                catch {
+                  issues.push({ type: "missing-transcript", agentId, key, file: v.sessionFile });
+                  sessionStats.flagged++;
+                }
+              }
+            }
+
+            // Stale cron sessions
+            if (key.includes(":cron:") && !key.includes(":run:")) {
+              if (s === "running" && v.updatedAt && (Date.now() - v.updatedAt) > 30 * 60 * 1000) {
+                issues.push({ type: "stale-cron", agentId, key, label: v.label, updatedAgo: timeAgo(v.updatedAt) });
+              }
+            }
+          }
+
+          costByAgent[agentId] = Math.round(agentCost * 1000) / 1000;
+        }
+
+        // Multi-agent conflicts (same thread, multiple agents)
+        for (const [threadId, sessions] of Object.entries(threadSessionMap)) {
+          const uniqueAgents = new Set(sessions.map(s => s.agentId));
+          if (uniqueAgents.size > 1) {
+            issues.push({ type: "binding-conflict", threadId, agents: [...uniqueAgents], sessions: sessions.length });
+          }
+        }
+
+        // Thread bindings state
+        const tb = loadThreadBindings();
+        const focusedCount = Object.keys(tb.bindings || {}).length;
+
+        const totalCost = Object.values(costByAgent).reduce((a, b) => a + b, 0);
+
+        return ok({
+          timestamp: new Date().toISOString(),
+          sessionStats,
+          cost: { total: Math.round(totalCost * 1000) / 1000, byAgent: costByAgent },
+          focusedThreads: focusedCount,
+          issueCount: issues.length,
+          issues: issues.length > 0 ? issues : "all clear",
+          forumBindings: Object.entries(fb).filter(([k]) => !k.startsWith("forum:")).map(([agent, forum]) => ({ agent, forum })),
+        });
+      },
+    });
+
+    // ─── _ms_transcript ───────────────────────────────────────────
+    // Read last N messages from a session's JSONL transcript file
+    api.registerTool({
+      name: "_ms_transcript",
+      description: "[debug] Read last N messages from a session's transcript file. Shows what the agent actually said.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Session key to read transcript for" },
+          limit: { type: "number", description: "Max messages to return (default 10, max 50)" },
+          agentId: { type: "string", description: "Agent ID. If omitted, searches all agents." },
+        },
+        required: ["sessionKey"],
+      },
+      async execute(_id, params) {
+        const { sessionKey, limit: rawLimit = 10, agentId } = params;
+        const limit = Math.min(Math.max(rawLimit || 10, 1), 50);
+        const agents = agentId ? [agentId] : listAgentIds();
+
+        for (const aid of agents) {
+          const store = readStore(aid);
+          const entry = store[sessionKey];
+          if (!entry?.sessionFile) continue;
+
+          try {
+            const raw = readFileSync(entry.sessionFile, "utf-8");
+            const lines = raw.trim().split("\n").filter(l => l.trim());
+            const messages = [];
+
+            // Parse JSONL — last N lines
+            const start = Math.max(0, lines.length - limit);
+            for (let i = start; i < lines.length; i++) {
+              try {
+                const envelope = JSON.parse(lines[i]);
+                // OpenClaw JSONL: { type, id, parentId, timestamp, message? | data? }
+                const envType = envelope.type;
+                const ts = envelope.timestamp ? new Date(envelope.timestamp).toISOString() : null;
+
+                // Skip non-message envelopes (custom, header, etc.)
+                if (envType !== "message") continue;
+
+                const msg = envelope.message || {};
+                const role = msg.role;
+                if (!role) continue;
+
+                const simplified = { role, timestamp: ts };
+
+                const content = msg.content;
+                if (role === "user" || role === "system") {
+                  if (typeof content === "string") {
+                    simplified.text = content.substring(0, 500);
+                  } else if (Array.isArray(content)) {
+                    simplified.text = content.map(c => c.text || `[${c.type}]`).join(" ").substring(0, 500);
+                  }
+                } else if (role === "assistant") {
+                  if (Array.isArray(content)) {
+                    const texts = content.filter(c => c.type === "text").map(c => c.text);
+                    simplified.text = texts.join("\n").substring(0, 500);
+                    const tools = content.filter(c => c.type === "toolCall");
+                    if (tools.length) simplified.toolCalls = tools.map(t => t.name || "unknown");
+                  } else if (typeof content === "string") {
+                    simplified.text = content.substring(0, 500);
+                  }
+                } else if (role === "toolResult") {
+                  simplified.toolName = msg.toolName;
+                  simplified.isError = msg.isError || false;
+                }
+                messages.push(simplified);
+              } catch {} // skip unparseable lines
+            }
+
+            return ok({
+              found: true,
+              agentId: aid,
+              sessionKey,
+              transcriptFile: entry.sessionFile,
+              totalLines: lines.length,
+              showing: messages.length,
+              messages,
+              timestamp: new Date().toISOString(),
+            });
+          } catch (e) {
+            return ok({ found: true, agentId: aid, sessionKey, error: `Can't read transcript: ${e.message}` });
+          }
+        }
+
+        return ok({ found: false, sessionKey, searchedAgents: agents });
+      },
+    });
+
+    // ╔══════════════════════════════════════════════════════════════╗
+    // ║  LAYER 2: Agent tools (mindset_*)                          ║
+    // ╚══════════════════════════════════════════════════════════════╝
+
     api.registerTool({
       name: "mindset_ping",
       description: "Test tool — confirms the openclaw-mindsets extension is loaded.",
       parameters: { type: "object", properties: {} },
-      async execute() {
-        return {
-          content: [{ type: "text", text: JSON.stringify({
-            ok: true, extension: "openclaw-mindsets", version: "0.1.0",
-            timestamp: new Date().toISOString(),
-          })}],
-        };
+      async execute(_id) {
+        return ok({ ok: true, extension: "openclaw-mindsets", version: "0.1.0", timestamp: new Date().toISOString() });
       },
     });
 
-    // ─── mindset_session_probe ───────────────────────────────────────
     api.registerTool({
       name: "mindset_session_probe",
       description: "Probe session store capabilities. Tests: list sessions, read store, check subagent API. Returns raw findings.",
       parameters: {
         type: "object",
         properties: {
-          agentId: {
-            type: "string",
-            description: "Agent ID to probe session store for (e.g. 'main', 'sysadmin'). Defaults to 'main'.",
-          },
+          agentId: { type: "string", description: "Agent ID to probe session store for (e.g. 'main', 'sysadmin'). Defaults to 'main'." },
         },
       },
-      async execute(params) {
+      async execute(_id, params) {
         const agentId = params?.agentId || "main";
-        const results = { agentId, timestamp: new Date().toISOString(), tests: {} };
-
-        try {
-          const { store, storePath } = readStore(agentId);
-          const keys = Object.keys(store);
-          const withDC = keys.filter(k => store[k]?.deliveryContext?.to);
-          results.tests.sessionStore = {
-            ok: true, storePath, totalSessions: keys.length,
-            withDeliveryTo: withDC.length,
-            samples: withDC.slice(0, 3).map(k => ({
-              key: k, deliveryContext: store[k].deliveryContext,
-            })),
-          };
-        } catch (e) {
-          results.tests.sessionStore = { ok: false, error: e.message };
-        }
-
-        try {
-          const sa = runtime.subagent;
-          results.tests.subagentMethods = {
-            ok: true,
-            methods: Object.getOwnPropertyNames(sa).filter(k => typeof sa[k] === "function"),
-          };
-        } catch (e) {
-          results.tests.subagentMethods = { ok: false, error: e.message };
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+        const agents = listAgentIds();
+        const byAgent = {};
+        for (const aid of agents) byAgent[aid] = Object.keys(readStore(aid)).length;
+        return ok({
+          agentId, timestamp: new Date().toISOString(),
+          agents: byAgent,
+          subagentMethods: Object.getOwnPropertyNames(runtime.subagent)
+            .filter(k => typeof runtime.subagent[k] === "function"),
+        });
       },
     });
 
-    // ─── mindset_create_task ─────────────────────────────────────────
-    // The core test: autonomous cross-thread task creation
-    //
-    // First principles:
-    // 1. Gateway reads deliveryContext from sessions.json at delivery time
-    // 2. If the entry has { channel: "discord", to: "channel:<threadId>" },
-    //    the reply goes to that Discord thread
-    // 3. subagent.run creates a session with an explicit key and runs it
-    // 4. We write deliveryContext BEFORE triggering the run
-    // 5. If subagent.run doesn't overwrite deliveryContext, the reply
-    //    routes to Discord. If it does, we patch after and before delivery.
-    //
     api.registerTool({
       name: "mindset_create_task",
       description: "TEST: Create a task session in a target agent's forum thread. Patches deliveryContext for Discord routing. Returns session key and delivery status.",
@@ -113,110 +645,44 @@ export default {
         },
         required: ["agentId", "threadId", "message"],
       },
-      async execute(params) {
-        const agentId = params?.agentId;
-        const threadId = params?.threadId;
-        const message = params?.message;
+      async execute(_id, params) {
+        const { agentId, threadId, message } = params || {};
+        if (!agentId || !threadId || !message) return ok({ error: "Missing required params" });
 
         logger.info(`create_task: agentId=${agentId} threadId=${threadId}`);
-
         const sessionKey = `agent:${agentId}:discord:channel:${threadId}`;
         const results = { agentId, threadId, sessionKey, timestamp: new Date().toISOString(), steps: {} };
 
-        // Step 1: Write deliveryContext to session store BEFORE the run
         try {
-          const { store, storePath } = readStore(agentId);
-
-          if (!store[sessionKey]) {
-            store[sessionKey] = { sessionId: sessionKey, updatedAt: Date.now() };
-          }
-          store[sessionKey].deliveryContext = {
-            channel: "discord",
-            to: `channel:${threadId}`,
-            accountId: "default",
-            threadId: threadId,
-          };
-          store[sessionKey].lastChannel = "discord";
-          store[sessionKey].lastTo = `channel:${threadId}`;
-          store[sessionKey].lastAccountId = "default";
-          store[sessionKey].lastThreadId = threadId;
-          store[sessionKey].channel = "discord";
-          store[sessionKey].chatType = "channel";
-          store[sessionKey].updatedAt = Date.now();
-
-          writeStore(storePath, store);
+          const store = readStore(agentId);
+          const storePath = join(AGENTS_DIR, agentId, "sessions", "sessions.json");
+          if (!store[sessionKey]) store[sessionKey] = { sessionId: sessionKey, updatedAt: Date.now() };
+          Object.assign(store[sessionKey], {
+            deliveryContext: { channel: "discord", to: `channel:${threadId}`, accountId: "default", threadId },
+            lastChannel: "discord", lastTo: `channel:${threadId}`,
+            lastAccountId: "default", lastThreadId: threadId,
+            channel: "discord", chatType: "channel", updatedAt: Date.now(),
+          });
+          writeFileSync(storePath, JSON.stringify(store, null, 2));
           results.steps.patchStore = { ok: true };
-          logger.info(`create_task: patched deliveryContext for ${sessionKey}`);
         } catch (e) {
-          results.steps.patchStore = { ok: false, error: e.message, stack: e.stack?.split("\n").slice(0, 3) };
-          return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+          results.steps.patchStore = { ok: false, error: e.message };
+          return ok(results);
         }
 
-        // Step 2: Run the session via subagent.run
         try {
           const { runId } = await runtime.subagent.run({
-            sessionKey,
-            message,
-            deliver: true,
+            sessionKey, message, deliver: true, idempotencyKey: crypto.randomUUID(),
           });
           results.steps.run = { ok: true, runId };
-          logger.info(`create_task: subagent.run started, runId=${runId}`);
-
-          // Step 3: Immediately re-patch deliveryContext in case subagent.run overwrote it
+          const store2 = readStore(agentId);
+          results.steps.dcSurvived = { ok: store2[sessionKey]?.deliveryContext?.to === `channel:${threadId}` };
           try {
-            const { store, storePath } = readStore(agentId);
-            if (store[sessionKey]) {
-              const dc = store[sessionKey].deliveryContext;
-              const needsPatch = !dc || dc.channel !== "discord" || dc.to !== `channel:${threadId}`;
-              if (needsPatch) {
-                store[sessionKey].deliveryContext = {
-                  channel: "discord",
-                  to: `channel:${threadId}`,
-                  accountId: "default",
-                  threadId: threadId,
-                };
-                store[sessionKey].lastChannel = "discord";
-                store[sessionKey].lastTo = `channel:${threadId}`;
-                writeStore(storePath, store);
-                results.steps.repatch = { ok: true, reason: "subagent.run overwrote deliveryContext" };
-              } else {
-                results.steps.repatch = { ok: true, reason: "deliveryContext preserved — no repatch needed" };
-              }
-            }
-          } catch (e) {
-            results.steps.repatch = { ok: false, error: e.message };
-          }
-
-          // Step 4: Wait for completion
-          try {
-            const result = await runtime.subagent.waitForRun({ runId, timeoutMs: 60000 });
-            results.steps.wait = {
-              ok: true,
-              status: result?.status,
-              hasReply: !!result?.reply,
-              replyPreview: result?.reply?.substring(0, 200),
-            };
-          } catch (e) {
-            results.steps.wait = { ok: false, error: e.message };
-          }
-
-          // Step 5: Final verify — did delivery context survive?
-          try {
-            const { store } = readStore(agentId);
-            const entry = store[sessionKey];
-            results.steps.verify = {
-              ok: entry?.deliveryContext?.to === `channel:${threadId}`,
-              deliveryContext: entry?.deliveryContext,
-            };
-          } catch (e) {
-            results.steps.verify = { ok: false, error: e.message };
-          }
-
-        } catch (e) {
-          results.steps.run = { ok: false, error: e.message };
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+            const result = await runtime.subagent.waitForRun({ runId, timeoutMs: 90000 });
+            results.steps.wait = { ok: true, status: result?.status, replyPreview: result?.reply?.substring(0, 300) };
+          } catch (e) { results.steps.wait = { ok: false, error: e.message }; }
+        } catch (e) { results.steps.run = { ok: false, error: e.message }; }
+        return ok(results);
       },
     });
 
