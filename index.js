@@ -518,6 +518,36 @@ const RENDER_MODES = {
   info:    { color: "#3498db" },
 };
 
+// ── Typing indicator (interval-based) ──────────────────────────────
+const _typingLoops = new Map(); // threadId → { interval, timeout }
+
+async function triggerTyping(threadId) {
+  try { await discordApi("POST", `/channels/${threadId}/typing`); }
+  catch (e) { if (_logger) _logger.debug(`triggerTyping: failed for ${threadId}: ${e.message}`); }
+}
+
+function startTypingLoop(threadId, maxMs = 120000) {
+  // Don't stack loops for the same thread
+  stopTypingLoop(threadId);
+  // Fire immediately
+  triggerTyping(threadId);
+  // Then every 8s (Discord typing expires at 10s)
+  const interval = setInterval(() => triggerTyping(threadId), 8000);
+  // Safety cap — auto-clear after maxMs
+  const timeout = setTimeout(() => stopTypingLoop(threadId), maxMs);
+  _typingLoops.set(threadId, { interval, timeout });
+  if (_logger) _logger.debug(`startTypingLoop: started for ${threadId} (max ${maxMs}ms)`);
+}
+
+function stopTypingLoop(threadId) {
+  const loop = _typingLoops.get(threadId);
+  if (!loop) return;
+  clearInterval(loop.interval);
+  clearTimeout(loop.timeout);
+  _typingLoops.delete(threadId);
+  if (_logger) _logger.debug(`stopTypingLoop: stopped for ${threadId}`);
+}
+
 async function postStyledMessage(threadId, content, kind = "status") {
   const mode = RENDER_MODES[kind] || RENDER_MODES.status;
   const color = parseInt(mode.color.replace("#", ""), 16);
@@ -798,6 +828,9 @@ export default {
           to: `channel:${threadId}`,
           idempotencyKey: crypto.randomUUID(),
         };
+
+        // Show typing indicator in the thread while the agent generates
+        if (threadId) startTypingLoop(threadId);
 
         // Call our own /mindsets/wake HTTP endpoint which spawns the gateway
         // agent call as a background process. This avoids blocking.
@@ -1264,13 +1297,16 @@ For direct reply (no specialist needed):
           return ok({ ok: false, error: e.message });
         }
 
-        // Subscribe the human to the thread (appears in sidebar)
+        // Silently subscribe Dom to the thread (no ping, just appears in sidebar)
         if (humanId) {
           try { await discordApi("PUT", `/channels/${threadId}/thread-members/${humanId}`); } catch {}
         }
 
         // Ensure session (uses shared function — idempotent)
         const sessionResult = ensureSession(mindset, threadId);
+
+        // Show typing while agent boots up
+        startTypingLoop(threadId);
 
         // Wake the session
         const starterPrompt = `The scope is in the first post above. Read it and respond.`;
