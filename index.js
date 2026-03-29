@@ -1222,5 +1222,5 @@ setTimeout(async () => {
         }
       } catch {}
     }
-  } catch {}
+  } catch (e) { console.error("mindsets boot notification error:", e.message || e); }
 }, 8000);
