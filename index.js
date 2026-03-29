@@ -2,11 +2,12 @@
  * openclaw-mindsets — OpenClaw extension for Discord.
  * Multiple agents acting as one.
  *
- * 8 tools:
- *   delegate  — give work to a mindset
+ * 9 tools:
+ *   triage    — ephemeral routing agent (auto-routes inbound messages)
+ *   topic     — open a new thread in a mindset
  *   board     — see everything active
  *   query     — ask a mindset silently
- *   nudge     — wake a stale session
+ *   continue  — follow up on a quiet thread
  *   close     — shut down a task
  *   health    — system health on heartbeat
  *   inspect   — deep dive on one thread
@@ -702,10 +703,10 @@ export default {
 
     // Per-turn context injection via before_prompt_build hook
     api.on("before_prompt_build", async () => {
-      return { appendSystemContext: "REMEMBER. You manage forum threads. Your obsession is giving the user the right context session for whatever they need. Every message: does a thread already exist where this would be a natural continuation? Forward it there. If not, open one in the right forum. Each thread is a focused conversation under a mindset. You are the moderator — route, surface, close. All threads are you, use first person. Say 'let\'s discuss this in #sysadmin' not 'delegating to sysadmin agent'." };
+      return { appendSystemContext: "STOP. REFOCUS. You manage forum threads. Your obsession is giving the user the right context session for whatever they need. Every message: does a thread already exist where this would be a natural continuation? Forward it there. If not, open one in the right forum. Each thread is a focused conversation under a mindset. You are the moderator — route, surface, close. All threads are you, use first person. Say 'let\'s discuss this in #sysadmin' not 'delegating to sysadmin agent'. NEVER edit files, run commands, or do work directly. ALWAYS open or continue a thread." };
     });
 
-    // Boot notification — post once per gateway start using temp file guard
+    // Boot notification — post once per gateway start to #sysadmin forum (not main chat)
     const bootGuard = join(AGENTS_DIR, ".mindsets-boot-" + process.pid);
     if (!existsSync(bootGuard)) {
       try { writeFileSync(bootGuard, String(Date.now())); } catch {}
@@ -713,15 +714,16 @@ export default {
         try {
           const token = getDiscordToken();
           if (!token) return;
-          const color = parseInt("5865F2", 16);
           const headers = { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
+          const sysadminForum = "1487085177204379829";
+          const ts = new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles", dateStyle: "short", timeStyle: "short" });
           const body = JSON.stringify({
-            components: [{ type: 17, accent_color: color, components: [{ type: 10, content: "🔄 **Gateway restarted.** Back online." }] }],
-            flags: 32768,
+            name: `Gateway restart — ${ts}`,
+            message: { content: "🔄 Gateway restarted. Back online." },
+            auto_archive_duration: 60,
           });
-          // Post to main channel
-          await fetch("https://discord.com/api/v10/channels/1487118150356173072/messages", { method: "POST", headers, body });
-          logger.info("openclaw-mindsets: posted restart notification");
+          await fetch(`https://discord.com/api/v10/channels/${sysadminForum}/threads`, { method: "POST", headers, body });
+          logger.info("openclaw-mindsets: posted restart notification to #sysadmin forum");
         } catch (e) {
           logger.warn("openclaw-mindsets: restart notification failed: " + (e.message || e));
         }
@@ -993,6 +995,174 @@ export default {
     // ║  L4: Agent-facing tools — compose L2/L3, never reimplement ║
     // ╚══════════════════════════════════════════════════════════════╝
 
+    // ═══ triage ════════════════════════════════════════════════════
+    api.registerTool({
+      name: "triage",
+      description: "Route an inbound message. Reads the user's latest message, active threads, and mindset descriptions, then returns a structured routing decision: continue an existing thread OR open a new one. Call with no params — the tool gathers context itself. Execute the returned decision without second-guessing it.",
+      parameters: {
+        type: "object",
+        properties: {
+          message: { type: "string", description: "Optional override: the user message to triage. If omitted, reads the latest from the main session transcript." },
+        },
+      },
+      async execute(_id, params) {
+        const startMs = Date.now();
+        try {
+          // 1. Gather user message — from param or main session transcript
+          let userMessage = params.message;
+          if (!userMessage) {
+            const mainSessionKey = sessionKeyFor("main", "main");
+            // Try reading transcript from main agent
+            const transcript = readTranscript(mainSessionKey, 10, "main");
+            if (transcript.found && transcript.messages) {
+              const userMsgs = transcript.messages.filter(m => m.role === "user" && m.text);
+              if (userMsgs.length) userMessage = userMsgs[userMsgs.length - 1].text;
+            }
+          }
+          if (!userMessage) return ok({ ok: false, error: "No user message found. Pass `message` param or ensure main session has recent messages." });
+
+          // 2. Load mindset descriptions from registry
+          let mindsets = [];
+          try {
+            const regPath = join(OPENCLAW_HOME, "mindsets.json");
+            const registry = JSON.parse(readFileSync(regPath, "utf-8"));
+            mindsets = (registry.mindsets || []).filter(m => m.id !== "main").map(m => ({
+              id: m.id, name: m.name, description: m.description,
+              forumId: m.forumId, capabilities: m.capabilities || [],
+            }));
+          } catch (e) {
+            // Fallback: derive from config bindings
+            const fb = getForumBindings();
+            for (const [key, val] of Object.entries(fb)) {
+              if (!key.startsWith("forum:")) mindsets.push({ id: key, forumId: val, name: key, description: "", capabilities: [] });
+            }
+          }
+
+          // 3. Scan active threads (board state)
+          const board = await scanBoard();
+          const activeThreads = [];
+          if (board.ok) {
+            for (const forum of board.forums) {
+              for (const thread of (forum.threads || [])) {
+                if (!thread.archived) {
+                  activeThreads.push({
+                    id: thread.id,
+                    name: thread.name,
+                    mindset: forum.agentId,
+                    forumId: forum.forumId,
+                    messageCount: thread.messageCount,
+                    sessionStatus: thread.sessionStatus,
+                    lastActivity: thread.sessionUpdated,
+                    tags: thread.tags,
+                  });
+                }
+              }
+            }
+          }
+
+          // 4. Build system prompt for the ephemeral triage agent
+          const systemPrompt = `You are a triage router. Given a user message, available mindsets, and active threads, decide the best routing.
+
+RULES:
+- If the message is a natural continuation of an existing open thread, route to that thread.
+- If the message is a new topic, pick the best mindset and suggest a new thread.
+- "main" is never a valid mindset target — always route to a specialist.
+- Prefer continuing existing threads over creating new ones when the topic overlaps.
+- Thread titles should be short (3-6 words), descriptive, action-oriented.
+- The brief should be the user's message reframed as a clear task/question for the mindset.
+- If the message is casual/conversational and doesn't need specialist work, return action "reply" — main handles it directly.
+- If multiple threads could match, pick the most relevant one.
+
+AVAILABLE MINDSETS:
+${mindsets.map(m => `- ${m.id} (${m.name}): ${m.description}`).join("\n")}
+
+ACTIVE THREADS:
+${activeThreads.length ? activeThreads.map(t => `- [${t.mindset}] "${t.name}" (id:${t.id}, msgs:${t.messageCount}, status:${t.sessionStatus || "unknown"}, activity:${t.lastActivity || "unknown"})`).join("\n") : "(none open)"}
+
+RESPOND WITH EXACTLY ONE JSON OBJECT (no markdown, no explanation):
+
+For continuing an existing thread:
+{"action":"continue","threadId":"<id>","sessionKey":"agent:<mindset>:discord:channel:<threadId>","message":"<brief for the mindset>","reason":"<1 sentence why>"}
+
+For a new thread:
+{"action":"new","mindset":"<id>","forumId":"<forumId>","title":"<short title>","brief":"<task description>","reason":"<1 sentence why>"}
+
+For direct reply (no specialist needed):
+{"action":"reply","reason":"<1 sentence why>"}`;
+
+          // 5. Spawn ephemeral subagent
+          const triageSessionKey = `agent:main:subagent:triage-${Date.now()}`;
+          const { runId } = await runtime.subagent.run({
+            sessionKey: triageSessionKey,
+            message: `USER MESSAGE:\n${userMessage}`,
+            systemPrompt,
+            deliver: false,
+            model: "anthropic/claude-sonnet-4-20250514",
+            idempotencyKey: crypto.randomUUID(),
+          });
+
+          // 6. Wait for result
+          const result = await runtime.subagent.waitForRun({ runId, timeoutMs: 15000 });
+          let reply = result?.reply || null;
+          if (!reply) {
+            try {
+              const { messages } = await runtime.subagent.getSessionMessages({ sessionKey: triageSessionKey, limit: 3 });
+              const last = [...(messages || [])].reverse().find(m => m.role === "assistant");
+              if (last?.content) {
+                reply = typeof last.content === "string" ? last.content :
+                  Array.isArray(last.content) ? last.content.filter(c => c.type === "text").map(c => c.text).join("\n") : null;
+              }
+            } catch {}
+          }
+
+          // 7. Cleanup ephemeral session
+          try { await runtime.subagent.deleteSession({ sessionKey: triageSessionKey }); } catch {}
+
+          // 8. Parse JSON from reply
+          if (!reply) return ok({ ok: false, error: "Triage agent returned no reply", durationMs: Date.now() - startMs });
+
+          let decision;
+          try {
+            // Extract JSON from reply (handle potential markdown wrapping)
+            const jsonMatch = reply.match(/\{[\s\S]*\}/);
+            if (jsonMatch) decision = JSON.parse(jsonMatch[0]);
+            else throw new Error("No JSON found");
+          } catch (e) {
+            return ok({ ok: false, error: `Failed to parse triage response: ${e.message}`, raw: reply.substring(0, 500), durationMs: Date.now() - startMs });
+          }
+
+          // 9. Validate and return
+          const validActions = ["continue", "new", "reply"];
+          if (!validActions.includes(decision.action)) {
+            return ok({ ok: false, error: `Invalid action: ${decision.action}`, decision, durationMs: Date.now() - startMs });
+          }
+
+          if (decision.action === "continue") {
+            if (!decision.threadId) return ok({ ok: false, error: "continue action missing threadId", decision, durationMs: Date.now() - startMs });
+            // Ensure sessionKey is populated
+            if (!decision.sessionKey) {
+              const mindset = activeThreads.find(t => t.id === decision.threadId)?.mindset;
+              if (mindset) decision.sessionKey = sessionKeyFor(mindset, decision.threadId);
+            }
+          }
+
+          if (decision.action === "new") {
+            if (!decision.mindset || !decision.title) return ok({ ok: false, error: "new action missing mindset or title", decision, durationMs: Date.now() - startMs });
+            // Ensure forumId is populated
+            if (!decision.forumId) {
+              const m = mindsets.find(ms => ms.id === decision.mindset);
+              if (m) decision.forumId = m.forumId;
+            }
+          }
+
+          return ok({ ok: true, ...decision, userMessage: userMessage.substring(0, 200), durationMs: Date.now() - startMs });
+
+        } catch (e) {
+          return ok({ ok: false, error: e.message, durationMs: Date.now() - startMs });
+        }
+      },
+    });
+
     api.registerTool({
       name: "topic",
       description: "Open a new thread to think about something. Picks the right mindset, creates a forum thread, and starts the conversation. Use this whenever you need specialist thinking on a topic.",
@@ -1014,43 +1184,31 @@ export default {
         if (!forumId) return ok({ ok: false, error: `Unknown mindset: ${mindset}. Available: ${Object.keys(fb).filter(k => !k.startsWith("forum:")).join(", ")}` });
 
         const humanId = getHumanId();
-        const mention = humanId ? `<@${humanId}>` : "";
 
-        // Create thread — just the mention to pull Dom into sidebar
+        // Create thread — opening post IS the scope (plain text)
         let threadId;
         try {
           const thread = await discordApi("POST", `/channels/${forumId}/threads`, {
             name: title,
-            message: { content: mention || "New task" },
+            message: { content: brief },
           });
           threadId = thread.id;
-
-          // Post styled delegation card with the actual brief
-          const color = parseInt("5865F2", 16);
-          await discordApi("POST", `/channels/${threadId}/messages`, {
-            components: [{
-              type: 17, accent_color: color,
-              components: [
-                { type: 10, content: `→ **${mindsetLabel(mindset)}**` },
-                { type: 14 },
-                { type: 10, content: brief },
-              ],
-            }],
-            flags: 32768,
-          }).catch(() => {});
         } catch (e) {
           return ok({ ok: false, error: e.message });
+        }
+
+        // Subscribe the human to the thread (appears in sidebar)
+        if (humanId) {
+          try { await discordApi("PUT", `/channels/${threadId}/thread-members/${humanId}`); } catch {}
         }
 
         // Ensure session (uses shared function — idempotent)
         const sessionResult = ensureSession(mindset, threadId);
 
-        // Trigger typing indicator before wake
-        try { await discordApi("POST", `/channels/${threadId}/typing`, {}); } catch {}
-
         // Wake the session
+        const starterPrompt = `The scope of this thread is in the first post above. Before responding, think carefully about WHY the user opened this thread. There are at least 3 very different reasons someone might have started this conversation — a quick fix, a deep investigation, or a strategic rethink. Assume your first instinct about the user's intent is wrong. Challenge it. Consider the opposite interpretation. Now offer exactly 3 paths forward, each based on a genuinely different reading of what the user might want. They should feel like different conversations, not variations of the same one. Label each with a one-line intent statement. Let the user choose or write their own direction.`;
         let wakeResult = null;
-        try { wakeResult = await wakeSession(sessionResult.sessionKey, brief, true, 0); }
+        try { wakeResult = await wakeSession(sessionResult.sessionKey, starterPrompt, true, 0); }
         catch (e) { wakeResult = { ok: false, error: e.message }; }
 
         return ok({ ok: true, mindset, threadId, sessionKey: sessionResult.sessionKey, title, forumId, wakeResult });
