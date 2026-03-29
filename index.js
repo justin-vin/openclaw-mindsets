@@ -700,6 +700,8 @@ export default {
     _logger = logger; // Set module-level logger for shared functions
     logger.info("openclaw-mindsets: registering");
 
+    // Boot notification is handled at module scope (see bottom of file)
+
     // Runtime-dependent shared functions (must be inside register() for request scope)
     async function wakeSession(sessionKey, message, deliver = true, timeoutMs = 60000) {
       logger.info(`wakeSession: waking`, { sessionKey, deliver, timeoutMs });
@@ -1149,3 +1151,49 @@ export default {
     logger.info("openclaw-mindsets: registered all tools");
   },
 };
+
+// Boot notification — post to main channel + all active forum threads
+setTimeout(async () => {
+  try {
+    const config = loadConfig();
+    const token = config.channels?.discord?.token;
+    if (!token) return;
+    const color = parseInt("5865F2", 16);
+    const msg = "🔄 **Gateway restarted.** Back online.";
+    const body = JSON.stringify({
+      components: [{ type: 17, accent_color: color, components: [{ type: 10, content: msg }] }],
+      flags: 32768,
+    });
+    const headers = { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
+
+    // Post to main channel
+    const channels = ["1487118150356173072"];
+
+    // Find active threads across all forums
+    const guildId = Object.keys(config.channels?.discord?.guilds || {})[0];
+    const forums = (config.bindings || [])
+      .filter(b => b.match?.peer?.kind === "channel")
+      .map(b => b.match.peer.id);
+
+    if (guildId) {
+      try {
+        const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/threads/active`, { headers });
+        const data = await res.json();
+        for (const t of (data.threads || [])) {
+          if (forums.includes(t.parent_id) && !t.thread_metadata?.archived) {
+            channels.push(t.id);
+          }
+        }
+      } catch {}
+    }
+
+    // Post to all channels
+    for (const ch of channels) {
+      try {
+        await fetch(`https://discord.com/api/v10/channels/${ch}/messages`, {
+          method: "POST", headers, body,
+        });
+      } catch {}
+    }
+  } catch {}
+}, 8000);
