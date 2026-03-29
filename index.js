@@ -701,36 +701,8 @@ export default {
     logger.info("openclaw-mindsets: registering");
 
     // Per-turn context injection via before_prompt_build hook
-    api.registerHook("before_prompt_build", async (event, ctx) => {
-      try {
-        const agentId = ctx.agentId;
-        const sessionKey = ctx.sessionKey || "";
-        const fb = getForumBindings();
-        const isMindset = !!fb[agentId];
-        const isMain = agentId === "main" || (!isMindset && !sessionKey.includes(":subagent:"));
-
-        // Build context string
-        const lines = [];
-
-        if (isMain) {
-          lines.push("[Mindsets] You are the orchestrator. Delegate work, monitor the board, never implement.");
-        } else if (isMindset) {
-          lines.push(`[Mindsets] You are the ${mindsetLabel(agentId)}. Stay in your lane. Report when done.`);
-        }
-
-        // Extract thread ID from session key if in a forum thread
-        const threadMatch = sessionKey.match(/discord:channel:(\d+)/);
-        if (threadMatch && isMindset) {
-          lines.push(`[Thread] ${threadMatch[1]}`);
-        }
-
-        if (lines.length > 0) {
-          return { appendSystemContext: lines.join("\n") };
-        }
-      } catch (e) {
-        logger.warn("mindsets hook error: " + e.message);
-      }
-      return {};
+    api.on("before_prompt_build", async () => {
+      return { appendSystemContext: "REMEMBER. You manage forum threads. Your obsession is giving the user the right context session for whatever they need. Every message: does a thread already exist where this would be a natural continuation? Forward it there. If not, open one in the right forum. Each thread is a focused conversation under a mindset. You are the moderator — route, surface, close. All threads are you, use first person. Say 'let\'s discuss this in #sysadmin' not 'delegating to sysadmin agent'." };
     });
 
     // Boot notification — post once per gateway start using temp file guard
@@ -897,7 +869,7 @@ export default {
 
     api.registerTool({
       name: "inspect",
-      description: "Deep inspection of one thread. Discord messages + session transcript + routing state side by side. For diagnosing problems.",
+      description: "Deep inspection of one thread. Messages + session state side by side.",
       parameters: {
         type: "object",
         properties: {
@@ -1022,8 +994,8 @@ export default {
     // ╚══════════════════════════════════════════════════════════════╝
 
     api.registerTool({
-      name: "delegate",
-      description: "Give work to a mindset. Creates a task thread in the right forum, sets up the session, posts the brief, and mentions the human. The mindset picks it up autonomously. You orchestrate — you don't implement.",
+      name: "topic",
+      description: "Open a new thread to think about something. Picks the right mindset, creates a forum thread, and starts the conversation. Use this whenever you need specialist thinking on a topic.",
       parameters: {
         type: "object",
         properties: {
@@ -1087,7 +1059,7 @@ export default {
 
     api.registerTool({
       name: "board",
-      description: "See everything. Every active thread across all mindsets — status, session health, staleness. Your nervous system. Call this to know what's happening.",
+      description: "See all active threads across all mindsets. Your overview of what you're currently thinking about.",
       parameters: {
         type: "object",
         properties: { mindset: { type: "string", description: "Filter to one mindset. Omit for the full board." } },
@@ -1115,7 +1087,7 @@ export default {
 
     api.registerTool({
       name: "query",
-      description: "Ask a mindset a question without posting to their thread. The answer comes back to you silently. For status checks and coordination — not for giving instructions.",
+      description: "Think about something silently in a specific thread context. The response comes back to you without posting in the thread.",
       parameters: {
         type: "object",
         properties: {
@@ -1134,8 +1106,8 @@ export default {
     });
 
     api.registerTool({
-      name: "nudge",
-      description: "Wake a stale session. For threads that have gone quiet. The mindset gets a push to continue or report status.",
+      name: "continue",
+      description: "Continue a conversation in a thread. For threads that have gone quiet or need a follow-up message.",
       parameters: {
         type: "object",
         properties: {
@@ -1182,7 +1154,7 @@ export default {
 
     api.registerTool({
       name: "close",
-      description: "Shut down a task. Archives the thread, kills the session. Terminal state — the work is either Done or Canceled. Use after reviewing completion.",
+      description: "Close a thread. Archives it, ends the conversation. Use when a topic is resolved or no longer needed.",
       parameters: {
         type: "object",
         properties: {
