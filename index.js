@@ -1187,12 +1187,39 @@ setTimeout(async () => {
       } catch {}
     }
 
-    // Post to all channels
+    // Post to all channels + wake their sessions
+    const gwToken = config.gateway?.auth?.token;
+    const gwPort = config.gateway?.port || 18789;
+
     for (const ch of channels) {
       try {
+        // Post visual notification
         await fetch(`https://discord.com/api/v10/channels/${ch}/messages`, {
           method: "POST", headers, body,
         });
+
+        // Wake the session via /tools/invoke (skip main channel — it's already alive)
+        if (ch !== "1487118150356173072" && gwToken) {
+          // Find which agent owns this thread
+          const parentRes = await fetch(`https://discord.com/api/v10/channels/${ch}`, { headers });
+          const parentData = await parentRes.json();
+          const parentId = parentData.parent_id;
+          const binding = (config.bindings || []).find(b => b.match?.peer?.id === parentId);
+          if (binding) {
+            const sessionKey = `agent:${binding.agentId}:discord:channel:${ch}`;
+            try {
+              await fetch(`http://127.0.0.1:${gwPort}/tools/invoke`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${gwToken}`, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  tool: "sessions_send",
+                  sessionKey,
+                  args: { sessionKey, message: "Gateway restarted. Review your last conversation and continue where you left off.", timeoutSeconds: 0 },
+                }),
+              });
+            } catch {}
+          }
+        }
       } catch {}
     }
   } catch {}
