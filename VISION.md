@@ -60,19 +60,33 @@ Manage mindsets. Subcommands: add, remove, list, inspect. Prompting discourages 
 ### `debug`(...)
 Deep introspection. Health check, zombie detection, session state, log inspection, binding state, wake history, prompt injection state, session recovery. The "look under the hood" tool. Heartbeat calls this. Always in prod, never pollutes.
 
-### How routing works (no tool)
+### How routing works (`consider` — lifecycle hook, not a tool)
 
-Main does NOT have a routing tool. Instead:
-- `main-turn.md` injects the active threads list every turn
-- Main already knows what threads exist
+Every turn gets automatic message analysis before the agent starts thinking. The `consider` hook:
+
+1. Fires on every user message (via `before_prompt_build` or similar)
+2. Spawns an ephemeral subagent with: the message, thread scope/mindset, active threads, available mindsets
+3. Subagent returns structured advice: "answer directly" / "open thread in X mindset" / "split into A and B" / "continue in existing thread Y"
+4. Advice is injected inline into the turn context — agent sees it before it starts responding
+5. Agent acts accordingly using `open`, `update`, or just answers
+
+**No tool call needed.** The analysis happens automatically. The agent never decides "should I check routing?" — it's always checked.
+
+**The identity bridge:** The subagent's prompt frames routing as organizational filing — "we want things in the right place in Discord" — not delegation to a separate agent. The agent says "let me open this in #infra" not "let me delegate to sysadmin." Mindsets are thinking modes, not people.
+
+**Latency:** Adds 2-5s per turn for the ephemeral subagent. Accepted tradeoff for consistent routing. Can optimize later (cheaper model, caching).
+
+**What it replaces from v1:** `triage` tool (now automatic, not agent-initiated, and available for all agents not just main).
+
+**Standard routing still applies on top:**
+- `main-turn.js` injects the active threads list every turn — main already knows what exists
 - **Dom wants to go there himself?** Reply with a link: "let's continue this in <#threadId>"
 - **Dom wants something passed along?** Call `update(threadId, steer: "...")` — inject direction without Dom leaving main
 - **New context needed?** Call `open`
-- No triage subagent. No token burn. Just the agent being smart.
 
-### What's gone from v1 (13 → 6 tools)
+### What's gone from v1 (13 → 6 tools + 1 hook)
 
-`triage` → prompting | `topic` → `open` | `refocus` → `open` + `close` | `continue` → `update(steer:)` | `board` → `status` | `report` → cut | `query` → cut | `inspect` → `status(threadId)` + `debug` | `recover` → `debug` | `health` → `debug` | `rename` → `update(title:)` | `steer` → `update(steer:)` | `add_mindset` / `remove_mindset` → `mindsets`
+`triage` → `consider` lifecycle hook (automatic, not a tool) | `topic` → `open` | `refocus` → `open` + `close` | `continue` → `update(steer:)` | `board` → `status` | `report` → cut | `query` → cut | `inspect` → `status(threadId)` + `debug` | `recover` → `debug` | `health` → `debug` | `rename` → `update(title:)` | `steer` → `update(steer:)` | `add_mindset` / `remove_mindset` → `mindsets`
 
 ## Bootstrap Message
 
@@ -115,30 +129,27 @@ Every prompt is a separate file. Change one, test one. No prompt buried in code.
 | **Bootstrap** | First Discord message in thread | ✅ Yes | Topic, scope, context. The thread's "about" page. |
 | **Grounding** | Session/turn injection | ❌ No | Agent worldview. "You are a thread, here's your toolkit." |
 
-### Four injection templates
+### Injection architecture
 
-Two injection points × two contexts = four files, each iterable independently:
+**Static markdown (root):**
+- `main.md` — main's identity as dispatcher. Routing philosophy, mindset awareness.
+- `thread.md` — thread grounding. "You are a thread within a mindset." Tools, autonomy, collaboration.
 
-**Session-level (stable — who you are):**
-- `prompts/main-session.md` — main's identity as dispatcher. What mindsets exist, how routing works.
-- `prompts/thread-session.md` — thread grounding. "You are a thread within a mindset." Tools, autonomy, collaboration.
-
-**Per-turn (dynamic — what's happening now):**
-- `prompts/main-turn.md` — active threads list, threads needing attention. Main needs this for routing.
-- `prompts/thread-turn.md` — lightweight thread context. Minimal or empty for now. Hook exists for later.
+**Dynamic lifecycle hooks (`lifecycle/`):**
+- `thread.js` — session-level: imports `thread.md`, layers on dynamic context (mindset info, thread metadata)
+- `turn.js` — per-turn: runs ephemeral message analysis, detects main vs thread, injects routing advice + context. For main: includes active threads list. For threads: includes scope info. One file handles both contexts.
 
 **Key design choice:** Main gets the full threads list every turn (it's the dispatcher). Mindset threads get grounding only — no threads list. If a thread needs awareness, it calls `status` on demand. This keeps thread context windows lean.
 
 ### No skill file
 
-The v1 skill (`mindsets/SKILL.md`) is gone. Everything is injected directly via `before_prompt_build`. No skill description size limits, no split between "always injected" and "read on demand." The 4 prompt templates ARE the injection — reliable, complete, no workarounds.
+The v1 skill (`mindsets/SKILL.md`) is gone. Everything is injected directly via `before_prompt_build`. No skill description size limits, no split between "always injected" and "read on demand." Static markdown + dynamic lifecycle hooks ARE the injection — reliable, complete, no workarounds.
 
 ### Prompt landscape (what we control vs native)
 
 **We control (iterate on these):**
-- The 4 injection templates above
-- The 2 skill files
-- The 2 guidance files
+- `main.md`, `thread.md` (static identity)
+- `lifecycle/*.js` (dynamic injection + consider)
 - Tool descriptions in code
 
 **Native OpenClaw (don't touch from extension):**
@@ -148,59 +159,11 @@ The v1 skill (`mindsets/SKILL.md`) is gone. Everything is injected directly via 
 
 ## Wake Mechanism
 
-How threads get started when there's no inbound user message. This is core architecture — the most fragile path in the system, and failures are silent.
+> ⚠️ **PENDING** — Cross-agent/cross-session communication architecture under active research.
+> See `ARCHITECTURE.md` for the recommended approach once finalized.
+> Research history: thread #wake-path-fragility in #infra forum.
 
-### The wake path (5 hops)
-
-```
-Extension code (open tool)
-  │
-  ├─ 1. SPAWN ──→ child_process.spawn("openclaw", ["agent", ...])
-  │                Detached, fire-and-forget. Extension returns immediately.
-  │                ⚠️ SILENT: if binary not found or spawn fails, no error surfaces.
-  │                   Extension already returned { ok: true }.
-  │
-  ├─ 2. CLI ────→ openclaw agent parses flags, connects to gateway WS
-  │                Creates an embedded runner with the message payload.
-  │                ⚠️ SILENT: if gateway is down or WS connect fails, process exits
-  │                   with code 1 to nowhere (detached, no parent listening).
-  │
-  ├─ 3. RUNNER ─→ Embedded runner creates/reuses session, injects message as user turn
-  │                Runs the agent (model call, tool execution, full turn).
-  │                ⚠️ SILENT: session delivery context is INCOMPLETE.
-  │                   CLI-created sessions have { deliveryContext: { channel: "discord" } }
-  │                   but NO `to`, `accountId`, `groupChannel`, or `space`.
-  │                   The --deliver + --reply-to flags patch over this for THIS turn only.
-  │
-  ├─ 4. DELIVER → --deliver flag tells the runner to post output to --reply-to target
-  │                Uses Discord channel API to send the response.
-  │                ⚠️ OBSERVABLE: if Discord API rejects (bad channel ID, no perms),
-  │                   this surfaces in gateway logs. Only observable hop.
-  │
-  └─ 5. DISCORD → Message appears in the thread.
-                   ✅ Success. User sees the response.
-```
-
-### Failure modes
-
-| Hop | Failure | Observable? | What you see |
-|-----|---------|-------------|--------------|
-| 1 | Binary not found / spawn error | ❌ No | Thread created, bootstrap posted, silence. No agent response ever arrives. |
-| 2 | Gateway down / WS timeout | ❌ No | Same as above. CLI exits to void. |
-| 3 | Model error / session corruption | ⚠️ Partial | Gateway logs show the error, but nothing in Discord. Thread goes silent. |
-| 3 | Session reset (2h idle) | ✅ Recoverable | CLI creates fresh session. Works, but agent has no history — only sees `--message`. |
-| 4 | Discord API error (perms, rate limit) | ✅ Yes | Gateway logs show delivery failure. Thread silent but diagnosable. |
-| 4 | Wrong channel ID | ✅ Yes | Discord rejects. Visible in logs. |
-
-**The dangerous pattern:** Hops 1-2 are completely silent. If the wake fails there, the extension has already returned success, main has already posted the `<#threadId>` link, and everyone thinks work is happening. Nobody finds out until they check the thread and see nothing.
-
-### Observability gaps (TODO)
-
-- **Process exit code:** The detached child's exit code is never checked. Could spawn with a PID file or log, but adds complexity.
-- **Health check:** `debug` tool should detect "thread created >5min ago, no agent response" as a zombie wake.
-- **Retry:** No retry mechanism. If hop 1 or 2 fails, the wake is permanently lost unless someone manually re-triggers.
-
-### What works
+### What works today
 
 ```bash
 openclaw agent --agent <mindset> \
@@ -212,11 +175,6 @@ openclaw agent --agent <mindset> \
 ```
 
 Validated 2026-03-29: cold wake, warm wake, post-reset, concurrent, cross-agent, special characters — all pass. Binary resolution via `which openclaw`, never hardcoded.
-
-### What doesn't work (and why)
-
-- **`gateway call agent` with deliver** → `Outbound not configured for channel: discord`. The gateway call creates a session with incomplete delivery context (no `to`, no `accountId`). The embedded runner doesn't know where Discord is. The `openclaw agent` CLI works because `--deliver` + `--reply-to` bypass the session's delivery context entirely.
-- **`sessions_send`** → phantom binding conflicts. Injecting into an existing session creates ghost peer entries that confuse OpenClaw's routing. Messages end up in wrong channels or nowhere.
 
 ### The `open` flow
 1. Create thread via Discord API in the mindset's forum
@@ -250,7 +208,8 @@ openclaw-mindsets-v2/
   openclaw.plugin.json
   package.json
   VISION.md                        — this document
-  main.md                          — static: main's identity, routing philosophy (fixed markdown)
+  main.md                          — static: main's identity, routing philosophy
+  thread.md                        — static: thread grounding, autonomy, collaboration
 
   tools/
     status.js                      — status tool (list threads / deep-dive)
@@ -261,12 +220,11 @@ openclaw-mindsets-v2/
     debug.js                       — debug tool (health/zombies/logs/recovery)
 
   lifecycle/
-    thread-session.js              — dynamic: builds grounding context at session start
-    main-turn.js                   — dynamic: builds active threads list + routing each turn
-    thread-turn.js                 — dynamic: per-turn thread context (lightweight)
+    thread.js                      — session-level: imports thread.md + dynamic context
+    turn.js                        — per-turn: message analysis + context injection (main + thread)
 ```
 
-14 files. Tools in `tools/`, dynamic lifecycle hooks in `lifecycle/` (JS functions that compute injection strings), static main identity as `main.md` in root. No skill directory — everything injected via `before_prompt_build`.
+14 files. Tools in `tools/`, dynamic lifecycle hooks in `lifecycle/` (JS functions that compute injection strings), static identity/grounding as `main.md` + `thread.md` in root. No skill directory — everything injected via `before_prompt_build`.
 
 ### Phases
 
