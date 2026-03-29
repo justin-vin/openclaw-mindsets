@@ -725,19 +725,19 @@ export default {
 
     // Runtime-dependent shared functions (must be inside register() for request scope)
     async function wakeSession(sessionKey, message, deliver = true, timeoutMs = 60000) {
-      logger.info(`wakeSession: waking`, { sessionKey, deliver, timeoutMs });
-      const { runId } = await runtime.subagent.run({
-        sessionKey, message, deliver, idempotencyKey: crypto.randomUUID(),
-      });
-      logger.info(`wakeSession: run started`, { sessionKey, runId });
-      if (timeoutMs === 0) return { ok: true, runId, sessionKey, status: "accepted" };
+      logger.info(`wakeSession: sending via sessions_send`, { sessionKey, timeoutMs });
       try {
-        const result = await runtime.subagent.waitForRun({ runId, timeoutMs });
-        logger.info(`wakeSession: run completed`, { sessionKey, runId, status: result?.status || "unknown" });
-        return { ok: true, runId, sessionKey, status: result?.status || "unknown", hasReply: !!result?.reply, replyPreview: result?.reply?.substring(0, 500) };
+        const result = await invokeToolAsSession(sessionKey, "sessions_send", {
+          sessionKey, message, timeoutSeconds: timeoutMs === 0 ? 0 : Math.ceil(timeoutMs / 1000),
+        });
+        const details = result?.result?.details || result?.result;
+        const parsed = typeof details === "string" ? JSON.parse(details) : details;
+        const content = parsed?.content?.[0]?.text ? JSON.parse(parsed.content[0].text) : parsed;
+        logger.info(`wakeSession: completed`, { sessionKey, status: content?.status });
+        return { ok: true, sessionKey, status: content?.status || "accepted", reply: content?.reply, runId: content?.runId };
       } catch (e) {
-        logger.warn(`wakeSession: timed out`, { sessionKey, runId, error: e.message });
-        return { ok: true, runId, sessionKey, status: "timeout", error: e.message };
+        logger.warn(`wakeSession: failed`, { sessionKey, error: e.message });
+        return { ok: false, sessionKey, error: e.message };
       }
     }
 
