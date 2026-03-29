@@ -700,7 +700,35 @@ export default {
     _logger = logger; // Set module-level logger for shared functions
     logger.info("openclaw-mindsets: registering");
 
-    // Boot notification is handled at module scope (see bottom of file)
+    // Boot notification — post once per gateway start using PID file guard
+    const bootGuard = join(AGENTS_DIR, ".mindsets-boot-" + process.pid);
+    logger.info(`boot-notify: checking guard ${bootGuard}, exists=${existsSync(bootGuard)}`);
+    if (!existsSync(bootGuard)) {
+      logger.info("boot-notify: first registration for this PID, scheduling notification");
+      try { writeFileSync(bootGuard, String(Date.now())); } catch (e) { logger.warn("boot-notify: guard write failed: " + e.message); }
+      setTimeout(async () => {
+        logger.info("boot-notify: timer fired, attempting Discord post");
+        try {
+          const token = getDiscordToken();
+          logger.info(`boot-notify: token=${token ? "present" : "MISSING"}`);
+          if (!token) { logger.warn("boot-notify: no token, aborting"); return; }
+          const color = parseInt("5865F2", 16);
+          const headers = { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
+          const body = JSON.stringify({
+            components: [{ type: 17, accent_color: color, components: [{ type: 10, content: "🔄 **Gateway restarted.** Back online." }] }],
+            flags: 32768,
+          });
+          const res = await fetch("https://discord.com/api/v10/channels/1487118150356173072/messages", { method: "POST", headers, body });
+          logger.info(`boot-notify: Discord response status=${res.status}`);
+          if (!res.ok) { const text = await res.text(); logger.warn(`boot-notify: Discord error: ${text}`); }
+          else { logger.info("boot-notify: SUCCESS — restart notification posted"); }
+        } catch (e) {
+          logger.warn("boot-notify: exception: " + (e.message || e));
+        }
+      }, 5000);
+    } else {
+      logger.info("boot-notify: guard exists, skipping (already notified for this PID)");
+    }
 
     // Runtime-dependent shared functions (must be inside register() for request scope)
     async function wakeSession(sessionKey, message, deliver = true, timeoutMs = 60000) {
@@ -1151,76 +1179,3 @@ export default {
     logger.info("openclaw-mindsets: registered all tools");
   },
 };
-
-// Boot notification — post to main channel + all active forum threads
-setTimeout(async () => {
-  try {
-    const config = loadConfig();
-    const token = config.channels?.discord?.token;
-    if (!token) return;
-    const color = parseInt("5865F2", 16);
-    const msg = "🔄 **Gateway restarted.** Back online.";
-    const body = JSON.stringify({
-      components: [{ type: 17, accent_color: color, components: [{ type: 10, content: msg }] }],
-      flags: 32768,
-    });
-    const headers = { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
-
-    // Post to main channel
-    const channels = ["1487118150356173072"];
-
-    // Find active threads across all forums
-    const guildId = Object.keys(config.channels?.discord?.guilds || {})[0];
-    const forums = (config.bindings || [])
-      .filter(b => b.match?.peer?.kind === "channel")
-      .map(b => b.match.peer.id);
-
-    if (guildId) {
-      try {
-        const res = await fetch(`https://discord.com/api/v10/guilds/${guildId}/threads/active`, { headers });
-        const data = await res.json();
-        for (const t of (data.threads || [])) {
-          if (forums.includes(t.parent_id) && !t.thread_metadata?.archived) {
-            channels.push(t.id);
-          }
-        }
-      } catch {}
-    }
-
-    // Post to all channels + wake their sessions
-    const gwToken = config.gateway?.auth?.token;
-    const gwPort = config.gateway?.port || 18789;
-
-    for (const ch of channels) {
-      try {
-        // Post visual notification
-        await fetch(`https://discord.com/api/v10/channels/${ch}/messages`, {
-          method: "POST", headers, body,
-        });
-
-        // Wake the session via /tools/invoke (skip main channel — it's already alive)
-        if (ch !== "1487118150356173072" && gwToken) {
-          // Find which agent owns this thread
-          const parentRes = await fetch(`https://discord.com/api/v10/channels/${ch}`, { headers });
-          const parentData = await parentRes.json();
-          const parentId = parentData.parent_id;
-          const binding = (config.bindings || []).find(b => b.match?.peer?.id === parentId);
-          if (binding) {
-            const sessionKey = `agent:${binding.agentId}:discord:channel:${ch}`;
-            try {
-              await fetch(`http://127.0.0.1:${gwPort}/tools/invoke`, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${gwToken}`, "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  tool: "sessions_send",
-                  sessionKey,
-                  args: { sessionKey, message: "Gateway restarted. Review your last conversation and continue where you left off.", timeoutSeconds: 0 },
-                }),
-              });
-            } catch {}
-          }
-        }
-      } catch {}
-    }
-  } catch (e) { console.error("mindsets boot notification error:", e.message || e); }
-}, 8000);
