@@ -700,34 +700,27 @@ export default {
     _logger = logger; // Set module-level logger for shared functions
     logger.info("openclaw-mindsets: registering");
 
-    // Boot notification — post once per gateway start using PID file guard
+    // Boot notification — post once per gateway start using temp file guard
     const bootGuard = join(AGENTS_DIR, ".mindsets-boot-" + process.pid);
-    logger.info(`boot-notify: checking guard ${bootGuard}, exists=${existsSync(bootGuard)}`);
     if (!existsSync(bootGuard)) {
-      logger.info("boot-notify: first registration for this PID, scheduling notification");
-      try { writeFileSync(bootGuard, String(Date.now())); } catch (e) { logger.warn("boot-notify: guard write failed: " + e.message); }
+      try { writeFileSync(bootGuard, String(Date.now())); } catch {}
       setTimeout(async () => {
-        logger.info("boot-notify: timer fired, attempting Discord post");
         try {
           const token = getDiscordToken();
-          logger.info(`boot-notify: token=${token ? "present" : "MISSING"}`);
-          if (!token) { logger.warn("boot-notify: no token, aborting"); return; }
+          if (!token) return;
           const color = parseInt("5865F2", 16);
           const headers = { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
           const body = JSON.stringify({
             components: [{ type: 17, accent_color: color, components: [{ type: 10, content: "🔄 **Gateway restarted.** Back online." }] }],
             flags: 32768,
           });
-          const res = await fetch("https://discord.com/api/v10/channels/1487118150356173072/messages", { method: "POST", headers, body });
-          logger.info(`boot-notify: Discord response status=${res.status}`);
-          if (!res.ok) { const text = await res.text(); logger.warn(`boot-notify: Discord error: ${text}`); }
-          else { logger.info("boot-notify: SUCCESS — restart notification posted"); }
+          // Post to main channel
+          await fetch("https://discord.com/api/v10/channels/1487118150356173072/messages", { method: "POST", headers, body });
+          logger.info("openclaw-mindsets: posted restart notification");
         } catch (e) {
-          logger.warn("boot-notify: exception: " + (e.message || e));
+          logger.warn("openclaw-mindsets: restart notification failed: " + (e.message || e));
         }
       }, 5000);
-    } else {
-      logger.info("boot-notify: guard exists, skipping (already notified for this PID)");
     }
 
     // Runtime-dependent shared functions (must be inside register() for request scope)
@@ -1176,106 +1169,41 @@ export default {
       },
     });
 
+
     api.registerTool({
-      name: "triage",
-      description: "Intelligent task routing. Given a task description, silently queries each mindset for a self-assessed alignment score (0-10), then returns a ranked list. The orchestrator uses this to decide who to delegate to.",
+      name: "report",
+      description: "Report back to the main agent. Posts a styled status block in the main channel with your update. Use when you've completed work, hit a blocker, or have something the orchestrator needs to know.",
       parameters: {
         type: "object",
         properties: {
-          task: { type: "string", description: "The task description to triage across mindsets." },
-          timeout: { type: "number", description: "Max ms to wait for each mindset response. Default: 30000." },
+          message: { type: "string", description: "Your update" },
         },
-        required: ["task"],
+        required: ["message"],
       },
       async execute(_id, params) {
-        const { task, timeout = 30000 } = params;
-        if (!task) return ok({ ok: false, error: "task is required" });
-
-        // Get available mindsets from forum bindings (excludes 'main' — main orchestrates, doesn't receive work)
-        const fb = getForumBindings();
-        const mindsets = Object.keys(fb).filter(k => !k.startsWith("forum:") && k !== "main");
-        if (mindsets.length === 0) return ok({ ok: false, error: "No mindsets found in forum bindings" });
-
-        const prompt = [
-          `Rate 0-10 how aligned this task is with your expertise. Reply with ONLY a JSON object: {"score": <number>, "reason": "<one sentence>"}`,
-          ``,
-          `Task: ${task}`,
-        ].join("\n");
-
-        // Query all mindsets in parallel
-        const queries = mindsets.map(async (id) => {
-          const sessionKey = `agent:${id}:main`;
-          const start = Date.now();
-          try {
-            const result = await silentQuery(sessionKey, prompt, timeout);
-            const elapsed = Date.now() - start;
-
-            // Parse score from reply
-            let score = null;
-            let reason = null;
-            const reply = result.reply || "";
-
-            // Try JSON parse first
-            const jsonMatch = reply.match(/\{[^}]*"score"\s*:\s*(\d+(?:\.\d+)?)[^}]*\}/);
-            if (jsonMatch) {
-              try {
-                const parsed = JSON.parse(jsonMatch[0]);
-                score = typeof parsed.score === "number" ? parsed.score : null;
-                reason = parsed.reason || null;
-              } catch {
-                score = parseFloat(jsonMatch[1]);
-              }
+        const { message } = params;
+        try {
+          const config = loadConfig();
+          const guilds = config.channels?.discord?.guilds || {};
+          const guildId = Object.keys(guilds)[0];
+          const channels = guilds[guildId]?.channels || {};
+          let mainChannelId = null;
+          for (const [chId, ch] of Object.entries(channels)) {
+            if (ch.allow && ch.includeThreadStarter === undefined) {
+              mainChannelId = chId;
+              break;
             }
-
-            // Fallback: look for bare number
-            if (score === null) {
-              const numMatch = reply.match(/\b(\d+(?:\.\d+)?)\s*(?:\/\s*10)?/);
-              if (numMatch) score = parseFloat(numMatch[1]);
-            }
-
-            // Clamp to 0-10
-            if (score !== null) score = Math.max(0, Math.min(10, score));
-
-            return {
-              mindset: id, label: mindsetLabel(id), score, reason,
-              raw: reply.substring(0, 300), elapsed: `${elapsed}ms`,
-              status: result.status || "unknown",
-            };
-          } catch (e) {
-            return {
-              mindset: id, label: mindsetLabel(id), score: null, reason: null,
-              raw: null, elapsed: `${Date.now() - start}ms`,
-              status: "error", error: e.message,
-            };
           }
-        });
-
-        const results = await Promise.all(queries);
-
-        // Sort by score descending (nulls last)
-        results.sort((a, b) => {
-          if (a.score === null && b.score === null) return 0;
-          if (a.score === null) return 1;
-          if (b.score === null) return -1;
-          return b.score - a.score;
-        });
-
-        const top = results.find(r => r.score !== null);
-
-        return ok({
-          ok: true,
-          task: task.substring(0, 200),
-          rankings: results.map(r => ({
-            mindset: r.mindset, label: r.label, score: r.score, reason: r.reason,
-            status: r.status, ...(r.error ? { error: r.error } : {}),
-          })),
-          recommendation: top ? {
-            mindset: top.mindset, label: top.label, score: top.score, reason: top.reason,
-          } : null,
-          queriedCount: mindsets.length,
-          respondedCount: results.filter(r => r.score !== null).length,
-          timestamp: new Date().toISOString(),
-        });
+          if (!mainChannelId) return ok({ ok: false, error: "No main channel found" });
+          const color = parseInt("2ecc71", 16);
+          await discordApi("POST", `/channels/${mainChannelId}/messages`, {
+            components: [{ type: 17, accent_color: color, components: [{ type: 10, content: message }] }],
+            flags: 32768,
+          });
+          return ok({ ok: true, postedTo: mainChannelId });
+        } catch (e) {
+          return ok({ ok: false, error: e.message });
+        }
       },
     });
 
