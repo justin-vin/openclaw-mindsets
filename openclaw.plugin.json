@@ -5,5 +5,8 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false
-  }
+  },
+  "skills": [
+    "./skills/mindsets"
+  ]
 }

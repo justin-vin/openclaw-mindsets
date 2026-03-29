@@ -1176,6 +1176,109 @@ export default {
       },
     });
 
+    api.registerTool({
+      name: "triage",
+      description: "Intelligent task routing. Given a task description, silently queries each mindset for a self-assessed alignment score (0-10), then returns a ranked list. The orchestrator uses this to decide who to delegate to.",
+      parameters: {
+        type: "object",
+        properties: {
+          task: { type: "string", description: "The task description to triage across mindsets." },
+          timeout: { type: "number", description: "Max ms to wait for each mindset response. Default: 30000." },
+        },
+        required: ["task"],
+      },
+      async execute(_id, params) {
+        const { task, timeout = 30000 } = params;
+        if (!task) return ok({ ok: false, error: "task is required" });
+
+        // Get available mindsets from forum bindings (excludes 'main' — main orchestrates, doesn't receive work)
+        const fb = getForumBindings();
+        const mindsets = Object.keys(fb).filter(k => !k.startsWith("forum:") && k !== "main");
+        if (mindsets.length === 0) return ok({ ok: false, error: "No mindsets found in forum bindings" });
+
+        const prompt = [
+          `Rate 0-10 how aligned this task is with your expertise. Reply with ONLY a JSON object: {"score": <number>, "reason": "<one sentence>"}`,
+          ``,
+          `Task: ${task}`,
+        ].join("\n");
+
+        // Query all mindsets in parallel
+        const queries = mindsets.map(async (id) => {
+          const sessionKey = `agent:${id}:main`;
+          const start = Date.now();
+          try {
+            const result = await silentQuery(sessionKey, prompt, timeout);
+            const elapsed = Date.now() - start;
+
+            // Parse score from reply
+            let score = null;
+            let reason = null;
+            const reply = result.reply || "";
+
+            // Try JSON parse first
+            const jsonMatch = reply.match(/\{[^}]*"score"\s*:\s*(\d+(?:\.\d+)?)[^}]*\}/);
+            if (jsonMatch) {
+              try {
+                const parsed = JSON.parse(jsonMatch[0]);
+                score = typeof parsed.score === "number" ? parsed.score : null;
+                reason = parsed.reason || null;
+              } catch {
+                score = parseFloat(jsonMatch[1]);
+              }
+            }
+
+            // Fallback: look for bare number
+            if (score === null) {
+              const numMatch = reply.match(/\b(\d+(?:\.\d+)?)\s*(?:\/\s*10)?/);
+              if (numMatch) score = parseFloat(numMatch[1]);
+            }
+
+            // Clamp to 0-10
+            if (score !== null) score = Math.max(0, Math.min(10, score));
+
+            return {
+              mindset: id, label: mindsetLabel(id), score, reason,
+              raw: reply.substring(0, 300), elapsed: `${elapsed}ms`,
+              status: result.status || "unknown",
+            };
+          } catch (e) {
+            return {
+              mindset: id, label: mindsetLabel(id), score: null, reason: null,
+              raw: null, elapsed: `${Date.now() - start}ms`,
+              status: "error", error: e.message,
+            };
+          }
+        });
+
+        const results = await Promise.all(queries);
+
+        // Sort by score descending (nulls last)
+        results.sort((a, b) => {
+          if (a.score === null && b.score === null) return 0;
+          if (a.score === null) return 1;
+          if (b.score === null) return -1;
+          return b.score - a.score;
+        });
+
+        const top = results.find(r => r.score !== null);
+
+        return ok({
+          ok: true,
+          task: task.substring(0, 200),
+          rankings: results.map(r => ({
+            mindset: r.mindset, label: r.label, score: r.score, reason: r.reason,
+            status: r.status, ...(r.error ? { error: r.error } : {}),
+          })),
+          recommendation: top ? {
+            mindset: top.mindset, label: top.label, score: top.score, reason: top.reason,
+          } : null,
+          queriedCount: mindsets.length,
+          respondedCount: results.filter(r => r.score !== null).length,
+          timestamp: new Date().toISOString(),
+        });
+      },
+    });
+
     logger.info("openclaw-mindsets: registered all tools");
   },
 };
