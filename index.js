@@ -13,7 +13,7 @@
  *   inspect   — deep dive on one thread
  *   recover   — restart recovery
  */
-import { readFileSync, writeFileSync, readdirSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 const OPENCLAW_HOME = process.env.OPENCLAW_HOME || `${process.env.HOME}/.openclaw`;
@@ -706,44 +706,44 @@ export default {
       return { appendSystemContext: "STOP. REFOCUS. You manage forum threads. Your obsession is giving the user the right context session for whatever they need. Every message: does a thread already exist where this would be a natural continuation? Forward it there. If not, open one in the right forum. Each thread is a focused conversation under a mindset. You are the moderator — route, surface, close. All threads are you, use first person. Say 'let\'s discuss this in #sysadmin' not 'delegating to sysadmin agent'. NEVER edit files, run commands, or do work directly. ALWAYS open or continue a thread." };
     });
 
-    // Boot notification — post once per gateway start to #sysadmin forum (not main chat)
-    const bootGuard = join(AGENTS_DIR, ".mindsets-boot-" + process.pid);
-    if (!existsSync(bootGuard)) {
-      try { writeFileSync(bootGuard, String(Date.now())); } catch {}
-      setTimeout(async () => {
-        try {
-          const token = getDiscordToken();
-          if (!token) return;
-          const headers = { Authorization: `Bot ${token}`, "Content-Type": "application/json" };
-          const sysadminForum = "1487085177204379829";
-          const ts = new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles", dateStyle: "short", timeStyle: "short" });
-          const body = JSON.stringify({
-            name: `Gateway restart — ${ts}`,
-            message: { content: "🔄 Gateway restarted. Back online." },
-            auto_archive_duration: 60,
-          });
-          await fetch(`https://discord.com/api/v10/channels/${sysadminForum}/threads`, { method: "POST", headers, body });
-          logger.info("openclaw-mindsets: posted restart notification to #sysadmin forum");
-        } catch (e) {
-          logger.warn("openclaw-mindsets: restart notification failed: " + (e.message || e));
-        }
-      }, 5000);
-    }
+    // Boot notification removed — restart events are logged, not posted to Discord.
 
     // Runtime-dependent shared functions (must be inside register() for request scope)
     async function wakeSession(sessionKey, message, deliver = true, timeoutMs = 60000) {
-      logger.info(`wakeSession: sending via sessions_send`, { sessionKey, timeoutMs });
+      // ARCHITECTURE: Use gateway 'agent' RPC method — the ONLY reliable path for
+      // multi-turn sessions that delivers replies to Discord threads.
+      // subagent.run fails silently on existing sessions.
+      // sessions_send delivers to sender, not thread.
+      // gateway call agent + deliver:true + channel:discord + to:channel:<threadId>
+      // = the same path as a user typing in the thread. Native. No hacks.
+      const threadId = sessionKey.split("discord:channel:")[1]?.split(":")[0];
+      logger.info("wakeSession: using gateway agent RPC", { sessionKey, threadId });
+      
       try {
-        const result = await invokeToolAsSession(sessionKey, "sessions_send", {
-          sessionKey, message, timeoutSeconds: timeoutMs === 0 ? 0 : Math.ceil(timeoutMs / 1000),
-        });
-        const details = result?.result?.details || result?.result;
-        const parsed = typeof details === "string" ? JSON.parse(details) : details;
-        const content = parsed?.content?.[0]?.text ? JSON.parse(parsed.content[0].text) : parsed;
-        logger.info(`wakeSession: completed`, { sessionKey, status: content?.status });
-        return { ok: true, sessionKey, status: content?.status || "accepted", reply: content?.reply, runId: content?.runId };
+        const config = loadConfig();
+        const gwToken = config.gateway?.auth?.token;
+        const gwPort = config.gateway?.port || 18789;
+        if (!gwToken) throw new Error("No gateway token");
+
+        const params = {
+          sessionKey,
+          message,
+          deliver,
+          channel: "discord",
+          to: `channel:${threadId}`,
+          idempotencyKey: crypto.randomUUID(),
+        };
+
+        // Use temp file + cat|xargs to avoid shell escaping issues with apostrophes
+        const { execSync } = await import("node:child_process");
+        const tmpFile = `/tmp/mindset-wake-${Date.now()}.json`;
+        writeFileSync(tmpFile, JSON.stringify(params));
+        execSync(`cat ${tmpFile} | xargs -0 openclaw gateway call agent --params`, { timeout: 30000 });
+        try { unlinkSync(tmpFile); } catch {}
+        logger.info("wakeSession: accepted", { sessionKey });
+        return { ok: true, sessionKey, status: "accepted" };
       } catch (e) {
-        logger.warn(`wakeSession: failed`, { sessionKey, error: e.message });
+        logger.warn("wakeSession: failed", { sessionKey, error: e.message });
         return { ok: false, sessionKey, error: e.message };
       }
     }
@@ -1363,7 +1363,30 @@ For direct reply (no specialist needed):
             components: [{ type: 17, accent_color: color, components: [{ type: 10, content: message }] }],
             flags: 32768,
           });
-          return ok({ ok: true, postedTo: mainChannelId });
+
+          // Post a confirmation receipt in the calling thread
+          let callingThreadId = null;
+          try {
+            const reqScope = globalThis[Symbol.for("openclaw.pluginRuntimeGatewayRequestScope")]?.getStore?.();
+            const sessionKey = reqScope?.context?.sessionKey || reqScope?.context?.key;
+            if (sessionKey) {
+              const match = sessionKey.match(/discord:channel:(\d+)$/);
+              if (match) callingThreadId = match[1];
+            }
+          } catch {}
+          if (callingThreadId && callingThreadId !== mainChannelId) {
+            try {
+              const receiptColor = parseInt("95a5a6", 16);
+              await discordApi("POST", `/channels/${callingThreadId}/messages`, {
+                components: [{ type: 17, accent_color: receiptColor, components: [{ type: 10, content: "↗ Reported to main" }] }],
+                flags: 32768,
+              });
+            } catch (threadErr) {
+              if (_logger) _logger.warn(`report: failed to post thread receipt: ${threadErr.message}`);
+            }
+          }
+
+          return ok({ ok: true, postedTo: mainChannelId, threadReceipt: callingThreadId || null });
         } catch (e) {
           return ok({ ok: false, error: e.message });
         }
