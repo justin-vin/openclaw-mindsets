@@ -106,25 +106,55 @@ Any thread can split itself when the conversation would benefit:
 
 ## Bootstrap Message (Critical — get this right)
 
-The bootstrap/prime message is the most important part of this extension. It's what makes primed context windows dramatically better than cold starts.
+The bootstrap/prime message is the most important part of this extension. It's what makes primed context windows dramatically better than cold starts. This is visible in Discord — both Dom and the agent see it as the first post in the thread.
 
-### What it contains
-- **Topic** — what this thread is about
-- **Scope** — boundaries of this conversation
-- **Constraints** — what's in/out of scope
-- **Context** — relevant background from the dispatch or parent thread
-- **Priming** — how the mindset should think about this
-- **Guard rails** — what to avoid
+### Thread types
 
-### Cross-thread collaboration section
-When multiple threads are working on related things, the bootstrap must include:
+Every thread has a type that determines its lifecycle:
+
+| Type | Purpose | Closes when |
+|------|---------|-------------|
+| `task` | Something to build, fix, or ship | Task is confirmed done by the user |
+| `discussion` | Explore an idea, make a decision | Topic reaches a conclusion or is no longer relevant |
+| `research` | Investigate, gather info, analyze | Findings are delivered and acknowledged |
+
+### Template
+
+```
+## [type] — [title]
+
+**Scope:** What this thread is about and what "done" looks like.
+**Constraints:** What this thread should NOT touch or focus on.
+**Closes when:** [derived from type — see table above]
+
+**Context from parent:**
+[Key decisions, facts, or findings carried from the originating conversation. Must be self-contained — the thread has no access to the parent's context window.]
+
+**Priming:**
+- Read: `path/to/skill`
+- Read: `path/to/file`
+[Files or skills the thread should read on wake to bootstrap itself.]
+
+---
+⚠️ Do not implement until user confirms intent.
+```
+
+### Section details
+
+- **Type** — Sets expectations for lifecycle. A `task` thread is expected to produce something; a `discussion` thread is expected to reach a conclusion. The type appears in the header.
+- **Scope** — The thread's job. Specific enough that the agent knows what "done" looks like. Vague scope = thread drift.
+- **Constraints** — Equally important as scope. What's explicitly out of bounds. Prevents threads from expanding into adjacent territory. Example: "Don't touch the wake mechanism — that's validated and shipped."
+- **Closes when** — Auto-derived from type but can be overridden for specific threads. Makes the exit criteria explicit.
+- **Context from parent** — The bridge between the originating conversation and this new context window. Must be self-contained because the new thread cannot see the parent's history. Include: key decisions already made, relevant facts, what's been tried/rejected.
+- **Priming** — Files and skills the thread should read before responding. This is how you bootstrap domain knowledge into a fresh context window. Can include workspace files, skills, shared docs like VISION.md.
+- **Guard rail** — "Do not implement until user confirms intent." Injected into every bootstrap. Prevents threads from sprinting to implementation before the user has weighed in on the approach.
+
+### Cross-thread collaboration section (when needed)
+When multiple threads are working on related things, the bootstrap should also include:
 - **Shared artifacts** — point to a shared file/doc that threads collaborate through (not direct thread-to-thread comms)
-- **Coordination protocol** — how to avoid stepping on each other's toes
 - **Read-before-write** — always read shared state before modifying
 - File-based collaboration is the safe default (like this VISION.md)
 - No `sessions_send` between threads — all coordination is via shared files
-
-> 🔴 TODO: Find and incorporate the bootstrap discussion from the other conversation thread. This needs to be very nuanced.
 
 ## Wake Mechanism (✅ Validated — 2026-03-29)
 
@@ -247,6 +277,54 @@ The agent should show typing when it starts working on a response. But:
 - Need to understand what OpenClaw does natively (does the Discord channel already show typing during agent turns?)
 - If native typing works, don't add a custom typing loop
 - If custom typing is needed, it MUST stop when the agent finishes (current v1 bug: `stopTypingLoop()` never called, typing shows for up to 120s after reply)
+
+## Self-Close (Thread tool)
+
+Threads need the ability to close themselves. When a conversation is done — the question is answered, the work is complete, the topic is resolved — the thread should be able to mark itself as closed.
+
+**Tool: `close` (existing tool — extend to all threads)**
+
+Already works in v1 for main. The only change: make it available to mindset threads too. Same tool, wider scope.
+
+- Can close own thread (omit `threadId`) or any other thread (pass `threadId`)
+- No reporting to main. No ceremony. Direct action.
+- Archives + locks the Discord thread, posts brief summary, cleans up session.
+
+## Thread Grounding (Per-Thread System Prompt)
+
+Every thread session needs to be grounded into the same mental model. This is different from the bootstrap message (which is topic-specific) — this is the **shared worldview** that every thread gets.
+
+### What every thread should know (injected via `before_prompt_build` or session system prompt)
+
+```
+You are a thread within a mindset, within a larger system.
+
+- You are one context window focused on one topic
+- You are part of Justin, a multi-mindset AI identity
+- Your mindset is [sysadmin/design-engineer/pa/wordware]
+- Your thread: "[thread title]"
+- You are autonomous — no one coordinates you, no one waits for your output
+- The human (Dom) interacts with you directly in this thread
+- Other threads exist in parallel — you can see them via `board` but don't coordinate with them
+- If this conversation drifts or should split, use `refocus` to fork
+- If this conversation is done, use `close` to archive it
+- If the title no longer reflects the conversation, rename it
+- Collaborate with other threads ONLY through shared files (read-before-write)
+```
+
+This grounding prompt replaces the v1 "STOP. REFOCUS." injection, but it's:
+- **Role-aware** — different for main vs mindset threads
+- **Dynamic** — includes the thread title, mindset, active thread count
+- **Empowering** — tells threads what they CAN do (close, refocus, rename) not just what they can't
+
+### Two layers, two delivery mechanisms
+
+| Layer | Where it lives | Visible in Discord? | Purpose |
+|-------|---------------|---------------------|---------|
+| **Bootstrap** | First Discord message in thread | ✅ Yes — Dom sees it | Topic, scope, constraints, context. The thread's "about" page. |
+| **Grounding** | `before_prompt_build` injection | ❌ No — session context only | Agent worldview. "You are a thread, you are autonomous, here's your toolkit." |
+
+Bootstrap is for the human AND the agent. Grounding is for the agent only.
 
 ## Thread Model: Flat Siblings
 
