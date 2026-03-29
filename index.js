@@ -701,6 +701,71 @@ export default {
     _logger = logger; // Set module-level logger for shared functions
     logger.info("openclaw-mindsets: registering");
 
+    // ═══════════════════════════════════════════════════════════════════
+    // /mindsets/wake — THE MULTI-TURN SESSION WAKE ENDPOINT
+    //
+    // DO NOT CHANGE THIS WITHOUT UNDERSTANDING WHY IT EXISTS.
+    //
+    // This is the result of 6+ hours of debugging. Every other approach
+    // was tested and failed:
+    //
+    //   subagent.run        → works for turn 1, SILENTLY FAILS on turn 2+
+    //   sessions_send       → delivers reply to SENDER, not to Discord thread
+    //   sessions_send via   → same problem
+    //     /tools/invoke
+    //   execSync from tool  → blocks the gateway, causes timeout
+    //     handler
+    //   spawn without HTTP  → detached process can't find openclaw binary
+    //     endpoint
+    //
+    // THE WORKING PATTERN:
+    //   1. Tool handler calls fetch("http://localhost/mindsets/wake")
+    //   2. This HTTP handler spawns `openclaw gateway call agent` as a
+    //      DETACHED BACKGROUND PROCESS
+    //   3. The background process connects to the gateway WebSocket
+    //   4. The gateway runs the agent turn with deliver:true + channel:discord
+    //   5. Reply appears in the Discord thread
+    //
+    // This is the same code path as a user typing in a thread. Native.
+    // The HTTP endpoint exists solely to break the concurrency deadlock
+    // between the tool handler and the gateway agent method.
+    //
+    // Full path to openclaw binary is REQUIRED (/opt/homebrew/bin/openclaw)
+    // because detached processes don't inherit PATH.
+    // ═══════════════════════════════════════════════════════════════════
+    api.registerHttpRoute({
+      path: "/mindsets/wake",
+      auth: "gateway",
+      match: "exact",
+      handler: async (req, res) => {
+        try {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          const body = JSON.parse(Buffer.concat(chunks).toString());
+          
+          // Call the gateway agent method via the runtime
+          const { execSync } = await import("node:child_process");
+          const tmpFile = `/tmp/mindset-http-wake-${Date.now()}.json`;
+          writeFileSync(tmpFile, JSON.stringify(body));
+          
+          // Fire and forget via background process
+          const { spawn } = await import("node:child_process");
+          const child = spawn("/opt/homebrew/bin/openclaw", [
+            "gateway", "call", "agent", "--timeout", "30000", "--params", readFileSync(tmpFile, "utf-8"),
+          ], { detached: true, stdio: "ignore" });
+          child.unref();
+          try { unlinkSync(tmpFile); } catch {}
+          
+          res.statusCode = 200;
+          res.end(JSON.stringify({ ok: true, status: "accepted" }));
+        } catch (e) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ ok: false, error: e.message }));
+        }
+        return true;
+      },
+    });
+
     // Per-turn context injection via before_prompt_build hook
     api.on("before_prompt_build", async () => {
       return { appendSystemContext: "STOP. REFOCUS. You manage forum threads. Your obsession is giving the user the right context session for whatever they need. Every message: does a thread already exist where this would be a natural continuation? Forward it there. If not, open one in the right forum. Each thread is a focused conversation under a mindset. You are the moderator — route, surface, close. All threads are you, use first person. Say 'let\'s discuss this in #sysadmin' not 'delegating to sysadmin agent'. NEVER edit files, run commands, or do work directly. ALWAYS open or continue a thread." };
@@ -734,14 +799,16 @@ export default {
           idempotencyKey: crypto.randomUUID(),
         };
 
-        // Use temp file + cat|xargs to avoid shell escaping issues with apostrophes
-        const { execSync } = await import("node:child_process");
-        const tmpFile = `/tmp/mindset-wake-${Date.now()}.json`;
-        writeFileSync(tmpFile, JSON.stringify(params));
-        execSync(`cat ${tmpFile} | xargs -0 openclaw gateway call agent --params`, { timeout: 30000 });
-        try { unlinkSync(tmpFile); } catch {}
-        logger.info("wakeSession: accepted", { sessionKey });
-        return { ok: true, sessionKey, status: "accepted" };
+        // Call our own /mindsets/wake HTTP endpoint which spawns the gateway
+        // agent call as a background process. This avoids blocking.
+        const res = await fetch(`http://127.0.0.1:${gwPort}/mindsets/wake`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${gwToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify(params),
+        });
+        const result = await res.json();
+        logger.info("wakeSession: accepted via HTTP", { sessionKey, ok: result.ok });
+        return { ok: result.ok, sessionKey, status: "accepted" };
       } catch (e) {
         logger.warn("wakeSession: failed", { sessionKey, error: e.message });
         return { ok: false, sessionKey, error: e.message };
@@ -1206,7 +1273,7 @@ For direct reply (no specialist needed):
         const sessionResult = ensureSession(mindset, threadId);
 
         // Wake the session
-        const starterPrompt = `The scope of this thread is in the first post above. Before responding, think carefully about WHY the user opened this thread. There are at least 3 very different reasons someone might have started this conversation — a quick fix, a deep investigation, or a strategic rethink. Assume your first instinct about the user's intent is wrong. Challenge it. Consider the opposite interpretation. Now offer exactly 3 paths forward, each based on a genuinely different reading of what the user might want. They should feel like different conversations, not variations of the same one. Label each with a one-line intent statement. Let the user choose or write their own direction.`;
+        const starterPrompt = `The scope is in the first post above. Read it and respond.`;
         let wakeResult = null;
         try { wakeResult = await wakeSession(sessionResult.sessionKey, starterPrompt, true, 0); }
         catch (e) { wakeResult = { ok: false, error: e.message }; }
