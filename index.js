@@ -700,6 +700,39 @@ export default {
     _logger = logger; // Set module-level logger for shared functions
     logger.info("openclaw-mindsets: registering");
 
+    // Per-turn context injection via before_prompt_build hook
+    api.registerHook("before_prompt_build", async (event, ctx) => {
+      try {
+        const agentId = ctx.agentId;
+        const sessionKey = ctx.sessionKey || "";
+        const fb = getForumBindings();
+        const isMindset = !!fb[agentId];
+        const isMain = agentId === "main" || (!isMindset && !sessionKey.includes(":subagent:"));
+
+        // Build context string
+        const lines = [];
+
+        if (isMain) {
+          lines.push("[Mindsets] You are the orchestrator. Delegate work, monitor the board, never implement.");
+        } else if (isMindset) {
+          lines.push(`[Mindsets] You are the ${mindsetLabel(agentId)}. Stay in your lane. Report when done.`);
+        }
+
+        // Extract thread ID from session key if in a forum thread
+        const threadMatch = sessionKey.match(/discord:channel:(\d+)/);
+        if (threadMatch && isMindset) {
+          lines.push(`[Thread] ${threadMatch[1]}`);
+        }
+
+        if (lines.length > 0) {
+          return { appendSystemContext: lines.join("\n") };
+        }
+      } catch (e) {
+        logger.warn("mindsets hook error: " + e.message);
+      }
+      return {};
+    });
+
     // Boot notification — post once per gateway start using temp file guard
     const bootGuard = join(AGENTS_DIR, ".mindsets-boot-" + process.pid);
     if (!existsSync(bootGuard)) {
