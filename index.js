@@ -1207,6 +1207,201 @@ export default {
       },
     });
 
+    // ═══ add_mindset ════════════════════════════════════════════
+    api.registerTool({
+      name: "add_mindset",
+      description: "Add a new mindset to the system. Creates the Discord forum, OpenClaw agent config, binding, workspace, and registry entry. Requires a gateway restart to take effect.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Agent ID (e.g. 'researcher'). Lowercase, no spaces." },
+          name: { type: "string", description: "Display name (e.g. 'Research Mindset')" },
+          description: { type: "string", description: "What this mindset does (e.g. 'Deep research, literature review, fact-checking')" },
+          categoryId: { type: "string", description: "Discord category ID to create the forum in. If omitted, uses the same category as existing forums." },
+        },
+        required: ["id", "name", "description"],
+      },
+      async execute(_id, params) {
+        const { id, name, description } = params;
+        const steps = {};
+
+        // 1. Find existing forum category
+        const config = loadConfig();
+        const existingBinding = (config.bindings || [])[0];
+        let categoryId = params.categoryId;
+        if (!categoryId && existingBinding) {
+          try {
+            const ch = await discordApi("GET", `/channels/${existingBinding.match.peer.id}`);
+            categoryId = ch.parent_id;
+          } catch {}
+        }
+
+        // 2. Create Discord forum channel
+        let forumId;
+        try {
+          const guildId = Object.keys(config.channels?.discord?.guilds || {})[0];
+          const forum = await discordApi("POST", `/guilds/${guildId}/channels`, {
+            name: id,
+            type: 15, // GUILD_FORUM
+            topic: description,
+            parent_id: categoryId || undefined,
+            available_tags: [
+              { name: "Planning" }, { name: "In Progress" }, { name: "Blocked" },
+              { name: "Done" }, { name: "Canceled" },
+            ],
+          });
+          forumId = forum.id;
+          steps.forum = { ok: true, id: forumId };
+        } catch (e) {
+          return ok({ ok: false, error: `Failed to create forum: ${e.message}`, steps });
+        }
+
+        // 3. Update openclaw.json — agent, binding, channel allowlist
+        try {
+          const fresh = loadConfig();
+          const workspacePath = join(OPENCLAW_HOME, `workspace-${id}`);
+
+          // Add agent
+          if (!fresh.agents) fresh.agents = {};
+          if (!fresh.agents.list) fresh.agents.list = [];
+          fresh.agents.list.push({
+            id,
+            workspace: workspacePath,
+            model: { primary: "anthropic/claude-opus-4-6" },
+            heartbeat: { every: "15m", target: "none", to: forumId },
+          });
+
+          // Add binding
+          if (!fresh.bindings) fresh.bindings = [];
+          fresh.bindings.push({
+            agentId: id,
+            match: { channel: "discord", peer: { kind: "channel", id: forumId } },
+          });
+
+          // Add to guild channel allowlist
+          const guildId = Object.keys(fresh.channels?.discord?.guilds || {})[0];
+          if (guildId) {
+            if (!fresh.channels.discord.guilds[guildId].channels) fresh.channels.discord.guilds[guildId].channels = {};
+            fresh.channels.discord.guilds[guildId].channels[forumId] = { allow: true, includeThreadStarter: false };
+          }
+
+          // Add tools
+          const globalTools = fresh.tools?.alsoAllow || [];
+          fresh.agents.list[fresh.agents.list.length - 1].tools = { alsoAllow: [...globalTools, "report"] };
+
+          writeFileSync(join(OPENCLAW_HOME, "openclaw.json"), JSON.stringify(fresh, null, 2));
+          steps.config = { ok: true };
+        } catch (e) {
+          steps.config = { ok: false, error: e.message };
+        }
+
+        // 4. Create workspace with SOUL.md
+        try {
+          const workspacePath = join(OPENCLAW_HOME, `workspace-${id}`);
+          const { mkdirSync } = await import("node:fs");
+          mkdirSync(workspacePath, { recursive: true });
+          mkdirSync(join(AGENTS_DIR, id, "sessions"), { recursive: true });
+          writeFileSync(join(AGENTS_DIR, id, "sessions", "sessions.json"), "{}");
+          writeFileSync(join(workspacePath, "SOUL.md"), `# Mindset: ${name}\n\n${description}\n`);
+          writeFileSync(join(workspacePath, "MEMORY.md"), `# MEMORY.md — ${name}\n\nFresh mindset. No memories yet.\n`);
+          steps.workspace = { ok: true };
+        } catch (e) {
+          steps.workspace = { ok: false, error: e.message };
+        }
+
+        // 5. Write to mindsets.json registry
+        try {
+          const regPath = join(OPENCLAW_HOME, "mindsets.json");
+          let registry = {};
+          try { registry = JSON.parse(readFileSync(regPath, "utf-8")); } catch {}
+          if (!registry.mindsets) registry.mindsets = {};
+          registry.mindsets[id] = { name, description, forumId, createdAt: new Date().toISOString() };
+          writeFileSync(regPath, JSON.stringify(registry, null, 2));
+          steps.registry = { ok: true };
+        } catch (e) {
+          steps.registry = { ok: false, error: e.message };
+        }
+
+        return ok({
+          ok: true, id, name, forumId,
+          steps,
+          note: "Gateway restart required for new agent to become active.",
+        });
+      },
+    });
+
+    // ═══ remove_mindset ═══════════════════════════════════════════
+    api.registerTool({
+      name: "remove_mindset",
+      description: "Remove a mindset from the system. Closes all open threads, removes from registry. Optionally removes the agent config and archives the forum.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Agent ID to remove (e.g. 'researcher')" },
+          removeAgent: { type: "boolean", description: "Also remove agent from openclaw.json config. Default: false" },
+        },
+        required: ["id"],
+      },
+      async execute(_id, params) {
+        const { id, removeAgent = false } = params;
+        const steps = {};
+
+        // 1. Close all open threads in this mindset's forum
+        const fb = getForumBindings();
+        const forumId = fb[id];
+        if (forumId) {
+          try {
+            const config = loadConfig();
+            const guildId = Object.keys(config.channels?.discord?.guilds || {})[0];
+            const { active } = await listForumThreads(guildId, forumId, false);
+            let closed = 0;
+            for (const t of active) {
+              try {
+                await ensureClosed(t.id);
+                closed++;
+              } catch {}
+            }
+            steps.threads = { ok: true, closed };
+          } catch (e) {
+            steps.threads = { ok: false, error: e.message };
+          }
+        }
+
+        // 2. Remove from mindsets.json registry
+        try {
+          const regPath = join(OPENCLAW_HOME, "mindsets.json");
+          let registry = {};
+          try { registry = JSON.parse(readFileSync(regPath, "utf-8")); } catch {}
+          if (registry.mindsets?.[id]) {
+            delete registry.mindsets[id];
+            writeFileSync(regPath, JSON.stringify(registry, null, 2));
+          }
+          steps.registry = { ok: true };
+        } catch (e) {
+          steps.registry = { ok: false, error: e.message };
+        }
+
+        // 3. Optionally remove from config
+        if (removeAgent) {
+          try {
+            const fresh = loadConfig();
+            fresh.agents.list = (fresh.agents.list || []).filter(a => a?.id !== id);
+            fresh.bindings = (fresh.bindings || []).filter(b => b?.agentId !== id);
+            writeFileSync(join(OPENCLAW_HOME, "openclaw.json"), JSON.stringify(fresh, null, 2));
+            steps.config = { ok: true, removed: true };
+          } catch (e) {
+            steps.config = { ok: false, error: e.message };
+          }
+        }
+
+        return ok({
+          ok: true, id, forumId,
+          steps,
+          note: removeAgent ? "Gateway restart required." : "Mindset removed from registry. Agent config retained.",
+        });
+      },
+    });
+
     logger.info("openclaw-mindsets: registered all tools");
   },
 };
