@@ -1496,6 +1496,143 @@ For direct reply (no specialist needed):
       },
     });
 
+    // ═══ refocus ════════════════════════════════════════════════
+    api.registerTool({
+      name: "refocus",
+      description: "Refocus this conversation into one or more new threads in the same forum. Single thread = reframe with clearer scope. Multiple threads = decompose/fork into parallel siblings. Each new thread is independent — no parent/child tracking. Use when scope has drifted, when a thread should split into parallel work, or when you want a cleaner starting point.",
+      parameters: {
+        type: "object",
+        properties: {
+          threads: {
+            type: "array",
+            description: "One or more threads to create. Each gets a structured bootstrap message.",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string", description: "Thread title — short, 3-6 words" },
+                type: { type: "string", enum: ["task", "discussion", "research"], description: "Thread type. Determines lifecycle expectations." },
+                scope: { type: "string", description: "What this thread is about and what 'done' looks like." },
+                constraints: { type: "string", description: "What this thread should NOT touch or focus on." },
+                context: { type: "string", description: "Key decisions, facts, or findings from the parent conversation to carry forward." },
+                priming: { type: "array", items: { type: "string" }, description: "Files or skills the thread should read on wake." },
+              },
+              required: ["title", "type", "scope"],
+            },
+          },
+          keepOriginal: { type: "boolean", description: "Keep this thread open after refocusing. Default: false (close it)." },
+        },
+        required: ["threads"],
+      },
+      async execute(_id, params) {
+        const { threads, keepOriginal = false } = params;
+        if (!threads || threads.length === 0) return ok({ ok: false, error: "At least one thread is required" });
+
+        // 1. Figure out which forum we're in from the calling session
+        let callingThreadId = null;
+        let callingAgentId = null;
+        try {
+          const reqScope = globalThis[Symbol.for("openclaw.pluginRuntimeGatewayRequestScope")]?.getStore?.();
+          const sessionKey = reqScope?.context?.sessionKey || reqScope?.context?.key;
+          if (sessionKey) {
+            const threadMatch = sessionKey.match(/discord:channel:(\d+)$/);
+            if (threadMatch) callingThreadId = threadMatch[1];
+            const agentMatch = sessionKey.match(/^agent:([^:]+):/);
+            if (agentMatch) callingAgentId = agentMatch[1];
+          }
+        } catch {}
+
+        if (!callingAgentId) return ok({ ok: false, error: "Could not determine calling agent. refocus must be called from a mindset thread." });
+
+        // Resolve forum ID from agent binding
+        const fb = getForumBindings();
+        const forumId = fb[callingAgentId];
+        if (!forumId) return ok({ ok: false, error: `No forum found for agent ${callingAgentId}` });
+
+        const humanId = getHumanId();
+        const created = [];
+
+        // 2. Create each new thread with structured bootstrap message
+        for (const t of threads) {
+          const lifecycleMap = {
+            task: "Closes when the task is confirmed done by the user.",
+            discussion: "Closes when the topic reaches a conclusion or is no longer relevant.",
+            research: "Closes when findings are delivered and acknowledged.",
+          };
+
+          // Build bootstrap message
+          const sections = [];
+          sections.push(`## ${t.type} — ${t.title}`);
+          sections.push(`**Scope:** ${t.scope}`);
+          if (t.constraints) sections.push(`**Constraints:** ${t.constraints}`);
+          sections.push(`**Closes when:** ${lifecycleMap[t.type] || "Resolved."}`);
+          if (t.context) sections.push(`\n**Context from parent:**\n${t.context}`);
+          if (t.priming && t.priming.length > 0) sections.push(`\n**Priming:**\n${t.priming.map(p => `- Read: \`${p}\``).join("\n")}`);
+          sections.push(`\n---\n⚠️ Do not implement until user confirms intent.`);
+
+          const bootstrapContent = sections.join("\n");
+
+          try {
+            const thread = await discordApi("POST", `/channels/${forumId}/threads`, {
+              name: t.title,
+              message: { content: bootstrapContent },
+            });
+
+            // Subscribe Dom to the new thread
+            if (humanId) {
+              try { await discordApi("PUT", `/channels/${thread.id}/thread-members/${humanId}`); } catch {}
+            }
+
+            // Ensure session exists
+            const sessionResult = ensureSession(callingAgentId, thread.id);
+
+            // Show typing while agent boots
+            startTypingLoop(thread.id);
+
+            // Wake the session
+            const starterPrompt = "The scope and context are in the bootstrap message above. Read it, then respond with your initial assessment and plan. Do not implement until the user confirms.";
+            let wakeResult = null;
+            try { wakeResult = await wakeSession(sessionResult.sessionKey, starterPrompt, true, 0); }
+            catch (e) { wakeResult = { ok: false, error: e.message }; }
+
+            created.push({ title: t.title, type: t.type, threadId: thread.id, sessionKey: sessionResult.sessionKey, wakeResult });
+          } catch (e) {
+            created.push({ title: t.title, type: t.type, error: e.message });
+          }
+        }
+
+        // 3. Post summary in current thread
+        const successCount = created.filter(c => c.threadId).length;
+        if (callingThreadId && successCount > 0) {
+          const links = created.filter(c => c.threadId).map(c => `→ <#${c.threadId}>`).join("\n");
+          const label = threads.length === 1 ? "Refocused into" : "Forked into";
+          try {
+            const color = parseInt("5865F2", 16);
+            await discordApi("POST", `/channels/${callingThreadId}/messages`, {
+              components: [{ type: 17, accent_color: color, components: [{ type: 10, content: `**${label}:**\n${links}` }] }],
+              flags: 32768,
+            });
+          } catch {}
+        }
+
+        // 4. Optionally close current thread
+        if (!keepOriginal && callingThreadId) {
+          try {
+            await ensureClosed(callingThreadId);
+          } catch (e) {
+            if (_logger) _logger.warn(`refocus: failed to close original thread: ${e.message}`);
+          }
+        }
+
+        return ok({
+          ok: true,
+          action: threads.length === 1 ? "reframe" : "fork",
+          created: created.length,
+          originalClosed: !keepOriginal,
+          threads: created,
+        });
+      },
+    });
+
     // ═══ add_mindset ════════════════════════════════════════════
     api.registerTool({
       name: "add_mindset",
