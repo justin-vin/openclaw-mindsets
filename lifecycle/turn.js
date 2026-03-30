@@ -180,6 +180,7 @@ B) 1-3 bullet points of housekeeping. Each bullet must:
    - Be self-contained (include thread/mindset name)
    - Be ≤15 words
    - Be an action: open, close, or clarify
+   - When referencing a thread, use <#THREAD_ID> syntax (e.g. <#1234567890>) so it renders as a Discord link
    - NOT describe what happened in the conversation
    - NOT offer help or analysis
 
@@ -210,6 +211,7 @@ B) 1-3 bullet points of housekeeping. Each bullet must:
    - Be self-contained (include actual thread name, not "this thread")
    - Be ≤15 words
    - Be an action: rename, open, close, split, or clarify
+   - When referencing a thread, use <#THREAD_ID> syntax (e.g. <#1234567890>) so it renders as a Discord link
    - NOT describe what happened in the conversation
    - NOT offer help or analysis
 
