@@ -99,6 +99,9 @@ async function getSendDiscordComponentMessage() {
 /** channelId → { messageId, sessionKey, options } */
 const blockState = new Map();
 
+/** Stored runtime ref for use in interactive handler */
+let _runtime = null;
+
 /** Channels currently generating predictions */
 const generating = new Set();
 
@@ -146,6 +149,7 @@ Example (no question): [{"emoji":"📋","description":"Check all active threads 
 export function setup(api) {
   const logger = api.logger;
   const runtime = api.runtime;
+  _runtime = runtime;
 
   // Restore persisted component entries so old buttons still work
   restoreComponentEntries(logger);
@@ -266,6 +270,25 @@ export function setup(api) {
         }
       } catch (e) {
         logger.warn(`action-blocks: webhook error — ${e.message}`);
+      }
+
+      // Dispatch as system event to trigger agent turn
+      // (webhook messages are ignored by OpenClaw's inbound pipeline)
+      const memState = blockState.get(rawChId);
+      const perState = loadState()[rawChId];
+      const sessionKey = memState?.sessionKey || perState?.sessionKey;
+      if (sessionKey && _runtime?.system?.enqueueSystemEvent) {
+        try {
+          _runtime.system.enqueueSystemEvent(
+            `[Action block selected by user] ${selected}`,
+            { sessionKey }
+          );
+          logger.info(`action-blocks: dispatched system event → ${sessionKey}`);
+        } catch (e) {
+          logger.warn(`action-blocks: system event dispatch failed — ${e.message}`);
+        }
+      } else {
+        logger.warn(`action-blocks: no sessionKey or runtime for dispatch (sessionKey=${sessionKey})`);
       }
 
       // Clean up in-memory state
