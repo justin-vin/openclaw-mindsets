@@ -245,7 +245,19 @@ Output routing bullets or "answer directly". Nothing else.`;
       return null;
     }
 
-    if (reply.toLowerCase() === "answer directly") return null;
+    if (reply.toLowerCase() === "answer directly") {
+      // Post green "on track" embed for visibility
+      if (channelId) {
+        const onTrackText = isMain ? "✅ On topic" : "✅ Conversation on track";
+        try {
+          await sendEmbed(channelId, { footer: { text: onTrackText } }, logger);
+          logger.info(`turn: posted on-track embed to channel=${channelId}`);
+        } catch (e) {
+          logger.warn(`turn: failed to post on-track embed — ${e.message}`);
+        }
+      }
+      return null;
+    }
 
     // Post routing block visibly as a ghost embed (footer-only, no color, no emoji).
     // Bot's own messages are natively ignored by OpenClaw — no feedback loop.

@@ -160,10 +160,21 @@ export function setup(api) {
       logger.info(`action-blocks: HANDLER FIRED — payload=${ctx.interaction?.payload} conv=${ctx.conversationId}`);
       const rawChId = ctx.conversationId?.replace(/^channel:/, "");
 
-      // Payload IS the label text (encoded as "action-blocks:<text>")
+      // Payload is "i=<index>" — resolve full description from persisted state
       let selected = ctx.interaction.payload?.trim() || "continue";
-      // Strip index-only fallback
-      if (/^i=\d+$/.test(selected)) selected = "continue";
+      const indexMatch = selected.match(/^i=(\d+)$/);
+      if (indexMatch) {
+        const idx = parseInt(indexMatch[1], 10);
+        // Try in-memory state first, then persisted state
+        const memEntry = blockState.get(rawChId);
+        const persisted = loadState()[rawChId];
+        const options = memEntry?.options || persisted?.options;
+        if (options && options[idx]?.description) {
+          selected = options[idx].description;
+        } else {
+          selected = "continue";
+        }
+      }
 
       logger.info(`action-blocks: selected="${selected}"`);
 
@@ -259,7 +270,7 @@ async function onAgentEnd(event, ctx, runtime, logger) {
           label: action.slice(0, 30),
           style: "secondary",
           ...(emoji ? { emoji: { name: emoji } } : {}),
-          callbackData: `${NAMESPACE}:${description.slice(0, 49)}`,
+          callbackData: `${NAMESPACE}:i=${i}`,
         }],
       });
     }
