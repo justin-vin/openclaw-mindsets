@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { cpSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { cpSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { isMainSession, listMindsets } from "../lib/config.js";
@@ -66,10 +66,18 @@ export async function analyze(event, ctx, api) {
 
   try {
     const sessionFile = findSessionFile(ctx);
-    if (!sessionFile) return null;
-
     const forkFile = join(tmpdir(), `mindsets-fork-${Date.now()}.jsonl`);
-    cpSync(sessionFile, forkFile);
+
+    if (sessionFile) {
+      cpSync(sessionFile, forkFile);
+    } else {
+      // No session file yet (fresh session). Create minimal JSONL with user's last message.
+      const userMsg = event?.messages?.filter(m => m.role === "user")?.pop();
+      const text = typeof userMsg?.content === "string" ? userMsg.content :
+        Array.isArray(userMsg?.content) ? userMsg.content.map(c => c.text || "").join(" ") : "";
+      if (!text) return null;
+      writeFileSync(forkFile, JSON.stringify({ type: "message", message: { role: "user", content: text } }) + "\n");
+    }
 
     const mindsets = listMindsets();
     const isMain = isMainSession(ctx);
