@@ -141,9 +141,14 @@ export function setup(api) {
   // 1. Cleanup when a new inbound message arrives
   api.on("message_received", async (event, ctx) => {
     if (ctx.channelId !== "discord") return;
-    const chId = ctx.conversationId;
-    if (!chId || !blockState.has(chId)) return;
-    await deleteBlock(chId, logger);
+    const chId = ctx.conversationId?.replace(/^channel:/, "");
+    if (!chId) return;
+    // Check in-memory state first, then persisted state (covers post-restart)
+    if (blockState.has(chId)) {
+      await deleteBlock(chId, logger);
+    } else {
+      await deletePersistedBlock(chId, logger);
+    }
   });
 
   // 2. Generate action blocks after user-triggered turns
@@ -461,4 +466,27 @@ async function deleteBlock(channelId, logger) {
     logger.debug(`action-blocks: delete — ${e.message}`);
   }
   blockState.delete(channelId);
+  // Also clean persisted state
+  try {
+    const state = loadState();
+    if (state[channelId]) {
+      delete state[channelId];
+      saveState(state);
+    }
+  } catch {}
+}
+
+/** Delete a block using only persisted state (for post-restart cleanup) */
+async function deletePersistedBlock(channelId, logger) {
+  const state = loadState();
+  const data = state[channelId];
+  if (!data?.messageId) return;
+  try {
+    await discordApi("DELETE", `/channels/${channelId}/messages/${data.messageId}`, null, logger);
+    logger.info(`action-blocks: deleted persisted stale block in ${channelId}`);
+  } catch (e) {
+    logger.debug(`action-blocks: persisted delete — ${e.message}`);
+  }
+  delete state[channelId];
+  saveState(state);
 }
