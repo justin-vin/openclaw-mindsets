@@ -13,6 +13,7 @@ import mindsetsTool from "./tools/mindsets.js";
 import debugTool from "./tools/debug.js";
 import * as threadLifecycle from "./lifecycle/thread.js";
 import * as turnLifecycle from "./lifecycle/turn.js";
+import * as actionBlocks from "./lifecycle/action-blocks.js";
 
 export default {
   id: "openclaw-mindsets",
@@ -44,6 +45,9 @@ export default {
       return Object.keys(result).length ? result : undefined;
     });
 
-    api.logger.info("mindsets v2: registered 6 tools + 1 hook");
+    // Post-turn action blocks
+    actionBlocks.setup(api);
+
+    api.logger.info("mindsets v2: registered 6 tools + 2 hooks + action-blocks");
   },
 };
