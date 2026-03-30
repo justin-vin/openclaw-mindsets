@@ -34,7 +34,7 @@ Thread titles are the user's only navigation. Rename when focus shifts. If split
 ## Tools
 
 - \`status()\` — all active threads (own mindset first)
-- \`open(mindset, title, prompt)\` — new thread
+- \`open(mindset, title, prompt, context?, done?, refs?)\` — new thread
 - \`close("self")\` — close this thread (only when user says done)
 - \`update(threadId, title?, steer?)\` — rename or redirect
 

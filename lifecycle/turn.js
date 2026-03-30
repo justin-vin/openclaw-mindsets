@@ -40,7 +40,7 @@ Thread titles are the user's only navigation. Names must be clear, specific, sca
 ## Tools
 
 - \`status()\` — all active threads
-- \`open(mindset, title, prompt)\` — new thread
+- \`open(mindset, title, prompt, context?, done?, refs?)\` — new thread
 - \`close(threadId)\` — close a thread
 - \`update(threadId, title?, steer?)\` — rename or redirect
 - \`mindsets("list")\` — available mindsets
@@ -105,8 +105,11 @@ Reply with a brief recommendation: "answer directly", "open <mindset> '<title>'"
     // Post visible analysis in Discord
     const threadId = ctx.sessionKey?.match(/discord:channel:(\d+)/)?.[1];
     if (threadId) {
-      try { await discord.sendMessage(threadId, `📋 **Analysis:** ${reply}`, logger); }
-      catch {}
+      try { await discord.sendEmbed(threadId, {
+        author: { name: "📋 Routing" },
+        description: reply,
+        color: 0x99AAB5,
+      }, logger); } catch {}
     }
 
     return `Routing advice: ${reply}`;

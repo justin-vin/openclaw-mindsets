@@ -86,8 +86,22 @@ See what's happening. No params = list all active threads. Pass threadId = deep-
 
 When called from a thread: prioritize the current mindset's threads first as a block, then show other mindsets' threads separately. Orient the agent to its own context while maintaining awareness of everything.
 
-### `open`(mindset, title, prompt)
-Create a new thread. Three params. For forking: call multiple times. For reframing: call `open` then `close`.
+### `open`(mindset, title, prompt, context?, done?, refs?)
+Create a new thread. Structured bootstrap — the tool concatenates fields into a formatted post.
+
+**Parameters:**
+- `mindset` (required) — target mindset name
+- `title` (required) — thread title, short and scannable
+- `prompt` (required) — the core task/objective
+- `context` (optional) — background, prior work, why this matters
+- `done` (optional) — acceptance criteria, what "done" looks like
+- `refs` (optional) — file paths, URLs, thread links to reference
+
+The tool formats these into sections (Task, Context, Done when, References) and posts as the bootstrap message. This enforces completeness — agents can't skip sections.
+
+Auto-subscribes configured users (Dom) to every new thread.
+
+For forking: call multiple times. For reframing: call `open` then `close`.
 
 ### `close`(threadId?)
 Close a thread. No threadId or "self" = close yourself. Pass a threadId = close that one. When the user says "done" — wrap up briefly. Don't be ceremonial.

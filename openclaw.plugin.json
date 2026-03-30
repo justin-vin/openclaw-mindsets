@@ -4,6 +4,13 @@
   "description": "Multiple agents acting as one. Thread-based context orchestration.",
   "configSchema": {
     "type": "object",
+    "properties": {
+      "autoSubscribe": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Discord user IDs to auto-add to every new thread."
+      }
+    },
     "additionalProperties": false
   },
   "skills": [
