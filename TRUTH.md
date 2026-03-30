@@ -156,6 +156,32 @@ Files. No direct messaging between sessions.
 | Session file patching | Gateway uses runtime state, ignores persisted files |
 | v1 `/mindsets/wake` | Spawned wrong command (`gateway call agent` instead of `openclaw agent`) |
 
+## Per-Turn Context Injection
+
+The `before_prompt_build` plugin hook fires before every model turn. It receives:
+- `event`: `{ prompt, messages }` — system prompt and conversation history
+- `ctx`: `{ agentId, sessionKey, sessionId, workspaceDir, trigger, channelId }`
+
+It can return:
+- `prependContext` — per-turn dynamic text injected before conversation (use for dynamic data)
+- `appendSystemContext` — appended to system prompt (use for stable behavioral guidance)
+- `prependSystemContext` — prepended to system prompt
+- `systemPrompt` — replaces system prompt entirely (don't use)
+
+### Main agent gets board state every turn
+
+When `ctx.agentId === "main"`, inject `prependContext` with:
+- All open threads classified as 🟢 working / 🟡 waiting for user / 🔴 needs attention
+- The rule: every thread must be WORKING or WAITING FOR USER — flag anything else
+
+Classification: `scanBoard()` + `readThreadMessages(threadId, 3)` per thread to check who posted last. ~4-5 Discord API calls total.
+
+### Thread agents get nothing
+
+Thread agents already have their full conversation context. Injecting status when the agent can see its own history is noise. Tested and confirmed 2026-03-29 — thread injection was useless, just repeated what the agent already knew.
+
+If cross-thread awareness is ever needed, that's a legitimate injection case. But threads are autonomous today.
+
 ## Rules
 
 1. Cold wake = CLI spawn. Steer = webhook POST. No mixing.
@@ -167,3 +193,4 @@ Files. No direct messaging between sessions.
 7. Files are the only shared state between threads.
 8. Threads are autonomous after creation — steer only when needed.
 9. For urgent steers, send `/stop` first, wait 1s, then send the message.
+10. Per-turn injection is main-only. Thread agents don't need it.

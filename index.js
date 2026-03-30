@@ -53,7 +53,31 @@ function listAgentIds() {
 
 function readStore(agentId) {
   const p = join(AGENTS_DIR, agentId, "sessions", "sessions.json");
-  try { return JSON.parse(readFileSync(p, "utf-8")); }
+  try {
+    const store = JSON.parse(readFileSync(p, "utf-8"));
+    // Self-healing: fix sessionFile paths pointing to wrong agent directory
+    // (e.g. sysadmin→infra rename). Runs on read, writes back only if dirty.
+    let dirty = false;
+    const expectedDir = join(AGENTS_DIR, agentId, "sessions");
+    for (const v of Object.values(store)) {
+      const sf = v.sessionFile;
+      if (!sf || sf.includes(`/agents/${agentId}/`)) continue;
+      // Path points to a different agent dir — try fixing
+      const basename = sf.split("/").pop();
+      const fixed = join(expectedDir, basename);
+      try {
+        if (existsSync(fixed)) {
+          v.sessionFile = fixed;
+          dirty = true;
+        }
+      } catch {}
+    }
+    if (dirty) {
+      try { writeFileSync(p, JSON.stringify(store, null, 2)); } catch {}
+      if (_logger) _logger.info(`readStore: self-healed sessionFile paths for ${agentId}`);
+    }
+    return store;
+  }
   catch { return {}; }
 }
 
@@ -796,9 +820,84 @@ export default {
       },
     });
 
-    // Per-turn context injection via before_prompt_build hook
-    api.on("before_prompt_build", async () => {
-      return { appendSystemContext: "STOP. REFOCUS. You manage forum threads. Your obsession is giving the user the right context session for whatever they need. Every message: does a thread already exist where this would be a natural continuation? Forward it there. If not, open one in the right forum. Each thread is a focused conversation under a mindset. You are the moderator — route, surface, close. All threads are you, use first person. Say 'let\'s discuss this in #sysadmin' not 'delegating to sysadmin agent'. NEVER edit files, run commands, or do work directly. ALWAYS open or continue a thread." };
+    // ════════════════════════════════════════════════════════════════════
+    //  PER-TURN CONTEXT INJECTION via before_prompt_build hook
+    //
+    //  Two modes based on which agent is running:
+    //    1. Main agent → board state + "working or waiting" rule
+    //    2. Thread agents → thread situational awareness + recommendations
+    // ════════════════════════════════════════════════════════════════════
+
+    async function buildMainBoardInjection() {
+      try {
+        const board = await scanBoard(null, "open");
+        if (!board.ok) return null;
+
+        const humanId = getHumanId();
+        const lines = ["## Board State (auto-injected per turn)\n"];
+        let hasFlags = false;
+
+        for (const forum of board.forums) {
+          if (!forum.threads?.length) continue;
+          for (const thread of forum.threads) {
+            let status, emoji;
+            const updatedMs = thread.sessionUpdated;
+            const isRunning = thread.sessionStatus === "running";
+
+            // Check last message in thread to determine if waiting for user
+            let lastMsgIsBot = false;
+            try {
+              const msgs = await readThreadMessages(thread.id, 3);
+              if (msgs.length > 0) {
+                const last = msgs[msgs.length - 1];
+                lastMsgIsBot = last.isBot;
+              }
+            } catch {}
+
+            if (isRunning || (updatedMs && updatedMs.includes("m ago") && !updatedMs.includes("h"))) {
+              emoji = "🟢"; status = `working (${updatedMs || "active"})`;
+            } else if (lastMsgIsBot) {
+              emoji = "🟡"; status = `waiting for user (agent replied ${updatedMs || "recently"})`;
+            } else {
+              emoji = "🔴"; status = `needs attention (${updatedMs || "unknown"}, not waiting for user)`;
+              hasFlags = true;
+            }
+
+            lines.push(`- ${emoji} [${forum.agentId}] "${thread.name}" — ${status}`);
+          }
+        }
+
+        if (lines.length === 1) lines.push("- (no open threads)");
+
+        lines.push("");
+        lines.push("### Rule");
+        lines.push("Every open thread should be either **WORKING** or **WAITING FOR USER**. Threads flagged 🔴 need action: steer them, close them, or nudge them.");
+        if (hasFlags) lines.push("⚠️ Flagged threads detected — address them.");
+
+        // Keep the main-agent behavioral injection
+        lines.push("");
+        lines.push("STOP. REFOCUS. You manage forum threads. Your obsession is giving the user the right context session for whatever they need. Every message: does a thread already exist where this would be a natural continuation? Forward it there. If not, open one in the right forum. Each thread is a focused conversation under a mindset. You are the moderator — route, surface, close. All threads are you, use first person. Say 'let\\'s discuss this in #sysadmin' not 'delegating to sysadmin agent'. NEVER edit files, run commands, or do work directly. ALWAYS open or continue a thread.");
+
+        return lines.join("\n");
+      } catch (e) {
+        if (_logger) _logger.warn("buildMainBoardInjection failed", { error: e.message });
+        return null;
+      }
+    }
+
+    api.on("before_prompt_build", async (event, ctx) => {
+      const { agentId } = ctx || {};
+
+      // Only main gets per-turn injection — board state so it can route intelligently.
+      // Thread agents already have their full conversation context; injection would be noise.
+      if (agentId === "main") {
+        const boardText = await buildMainBoardInjection();
+        if (boardText) return { prependContext: boardText };
+        // Fallback: at minimum keep the behavioral injection
+        return { appendSystemContext: "STOP. REFOCUS. You manage forum threads. Your obsession is giving the user the right context session for whatever they need. Every message: does a thread already exist where this would be a natural continuation? Forward it there. If not, open one in the right forum. Each thread is a focused conversation under a mindset. You are the moderator — route, surface, close. All threads are you, use first person. Say 'let\\'s discuss this in #sysadmin' not 'delegating to sysadmin agent'. NEVER edit files, run commands, or do work directly. ALWAYS open or continue a thread." };
+      }
+
+      return {};
     });
 
     // Boot notification removed — restart events are logged, not posted to Discord.
