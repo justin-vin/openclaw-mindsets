@@ -102,9 +102,15 @@ const blockState = new Map();
 /** Channels currently generating predictions */
 const generating = new Set();
 
-const THREAD_PROMPT = `Predict what the user will say next in this focused work thread. Output ONLY a JSON array of 3-4 objects, each with "emoji", "label" (max 30 chars, action verb), and "description" (max 60 chars, explains what it does). Be specific to the conversation context — not generic. Mix forward actions and clarifying questions.
+const THREAD_PROMPT = `Predict what the user will say next in this focused work thread. Output ONLY a JSON array of 2-4 objects (vary the count naturally), each with:
+- "emoji": a relevant emoji
+- "title": the noun/topic (max 30 chars) — what it's about
+- "description": brief context (max 60 chars) — explains what it is
+- "action": the verb (max 20 chars) — what to do, a short imperative
 
-Example: [{"emoji":"🚀","label":"Ship it","description":"Deploy the current changes to production"},{"emoji":"🤔","label":"Error handling?","description":"What happens when the API returns a 500?"},{"emoji":"🧪","label":"Show tests","description":"Run the test suite and show results"},{"emoji":"🔄","label":"Try another approach","description":"Rethink the current implementation strategy"}]`;
+Title and action must be DIFFERENT text. Title = noun phrase, action = verb phrase.
+
+Example: [{"emoji":"🚀","title":"Production deploy","description":"Push auth service changes to production","action":"Deploy now"},{"emoji":"🤔","title":"Error handling","description":"What happens when the API returns a 500?","action":"Investigate"},{"emoji":"🧪","title":"Test suite","description":"Run tests and show current coverage","action":"Run tests"}]`;
 
 const MAIN_PROMPT = `You are predicting what the user might want to do next in their main command channel. This is NOT a focused work thread — it's their home base for orchestrating across mindsets (infra, dev, pa, wordware).
 
@@ -114,9 +120,15 @@ Suggest a mix of:
 - Fresh ideas based on what mindsets could help with
 - Housekeeping (close old threads, check email, calendar)
 
-Output ONLY a JSON array of 3-4 objects, each with "emoji", "label" (max 30 chars), and "description" (max 60 chars). Be specific and useful, not generic.
+Output ONLY a JSON array of 2-4 objects (vary the count naturally), each with:
+- "emoji": a relevant emoji
+- "title": the noun/topic (max 30 chars) — what it's about
+- "description": brief context (max 60 chars) — explains what it is
+- "action": the verb (max 20 chars) — what to do, a short imperative
 
-Example: [{"emoji":"📋","label":"Board status","description":"Check all active threads across mindsets"},{"emoji":"🧹","label":"Close stale threads","description":"Review and close threads with no recent activity"},{"emoji":"📬","label":"Check inbox","description":"Scan for unread emails needing attention"},{"emoji":"💡","label":"What should I work on?","description":"Suggest the highest priority task right now"}]`;
+Title and action must be DIFFERENT text. Title = noun phrase, action = verb phrase.
+
+Example: [{"emoji":"📋","title":"Board status","description":"Check all active threads across mindsets","action":"Show board"},{"emoji":"📬","title":"Inbox","description":"Scan for unread emails needing attention","action":"Check email"}]`;
 
 // ─── Setup ───────────────────────────────────────────────────────────
 
@@ -232,21 +244,27 @@ async function onAgentEnd(event, ctx, runtime, logger) {
     const options = await predict(ctx, runtime, logger, isMain);
     if (!options?.length) return;
 
-    // Build container card spec with text descriptions + emoji buttons
+    // Build container card spec with text descriptions + emoji buttons + separators
     const blocks = [];
-    for (const opt of options) {
+    for (let i = 0; i < options.length; i++) {
+      const opt = options[i];
       const emoji = opt.emoji || "";
-      const label = opt.label || "Go";
-      const description = opt.description || label;
-      const fullText = `${emoji} ${label}`.trim();
-      blocks.push({ type: "text", text: `**${fullText}**\n${description}` });
+      const title = opt.title || opt.label || "Option";
+      const description = opt.description || title;
+      const action = opt.action || opt.label || "Go";
+      // Separator between options (not before first)
+      if (i > 0) blocks.push({ type: "separator" });
+      // Title without emoji — emoji lives in the button only
+      blocks.push({ type: "text", text: `**${title}**\n${description}` });
+      // callbackData carries emoji + title for webhook posting
+      const callbackText = `${emoji} ${title}`.trim();
       blocks.push({
         type: "actions",
         buttons: [{
-          label: label.slice(0, 40),
+          label: action.slice(0, 30),
           style: "secondary",
           ...(emoji ? { emoji: { name: emoji } } : {}),
-          callbackData: `${NAMESPACE}:${fullText.slice(0, 49)}`,
+          callbackData: `${NAMESPACE}:${callbackText.slice(0, 49)}`,
         }],
       });
     }
@@ -347,7 +365,7 @@ async function predict(ctx, runtime, logger, isMain = false) {
       timeoutMs: 12_000,
       runId: randomUUID(),
       extraSystemPrompt:
-        'Output ONLY a JSON array of 3-4 objects with "emoji", "label", and "description" keys. No markdown fences, no explanation, no preamble.',
+        'Output ONLY a JSON array of 2-4 objects with "emoji", "title" (noun), "description", and "action" (verb) keys. Title and action must differ. No markdown fences, no explanation, no preamble.',
     });
 
     const text = result?.payloads?.[0]?.text?.trim();
@@ -363,22 +381,25 @@ async function predict(ctx, runtime, logger, isMain = false) {
       .filter((item) => {
         // Support both old string format and new object format
         if (typeof item === "string") return item.trim().length > 0;
-        return item && typeof item === "object" && (item.label || item.description);
+        return item && typeof item === "object" && (item.title || item.label || item.description);
       })
       .map((item) => {
         if (typeof item === "string") {
-          // Legacy format: "🚀 Ship it" → parse emoji + label
+          // Legacy format: "🚀 Ship it" → parse emoji + title
           const emojiMatch = item.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F?)\s*/u);
+          const text = (emojiMatch ? item.slice(emojiMatch[0].length) : item).trim();
           return {
             emoji: emojiMatch?.[1] || "",
-            label: (emojiMatch ? item.slice(emojiMatch[0].length) : item).slice(0, 30),
-            description: item.slice(0, 60),
+            title: text.slice(0, 30),
+            description: text.slice(0, 60),
+            action: "Go",
           };
         }
         return {
           emoji: (item.emoji || "").slice(0, 2),
-          label: (item.label || "Go").slice(0, 30),
-          description: (item.description || item.label || "").slice(0, 60),
+          title: (item.title || item.label || "Option").slice(0, 30),
+          description: (item.description || item.title || item.label || "").slice(0, 60),
+          action: (item.action || item.label || "Go").slice(0, 20),
         };
       })
       .slice(0, 4);

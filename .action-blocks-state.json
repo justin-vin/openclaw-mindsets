@@ -973,8 +973,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488183788793106532",
-        "createdAt": 1774881670849,
-        "expiresAt": 1774968070849
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn__w8kw-Fo",
@@ -986,8 +986,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488183788793106532",
-        "createdAt": 1774881670849,
-        "expiresAt": 1774968070849
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn_DIlvLL15",
@@ -999,8 +999,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488183788793106532",
-        "createdAt": 1774881670849,
-        "expiresAt": 1774968070849
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn_ciP9wXaJ",
@@ -1012,8 +1012,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488183788793106532",
-        "createdAt": 1774881670849,
-        "expiresAt": 1774968070849
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn_i6b6Xstq",
@@ -1025,8 +1025,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186428239384657",
-        "createdAt": 1774881693777,
-        "expiresAt": 1774883493777
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn_utLT4ePM",
@@ -1038,8 +1038,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186428239384657",
-        "createdAt": 1774881693777,
-        "expiresAt": 1774883493777
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn_y4NhAsuL",
@@ -1051,8 +1051,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186428239384657",
-        "createdAt": 1774881693777,
-        "expiresAt": 1774883493777
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn_UD1gzXXF",
@@ -1064,35 +1064,72 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186428239384657",
-        "createdAt": 1774881693777,
-        "expiresAt": 1774883493777
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_5-x3jx2A",
+        "kind": "button",
+        "label": "Mark done",
+        "callbackData": "action-blocks:✅ Thread cleanup",
+        "sessionKey": "agent:infra:discord:channel:1488183175245991966",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188250387382372",
+        "createdAt": 1774882128160,
+        "expiresAt": 1774883928160
+      },
+      {
+        "id": "btn_PBXHQmcz",
+        "kind": "button",
+        "label": "Integrate",
+        "callbackData": "action-blocks:📊 Status API integration",
+        "sessionKey": "agent:infra:discord:channel:1488183175245991966",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188250387382372",
+        "createdAt": 1774882128160,
+        "expiresAt": 1774883928160
+      },
+      {
+        "id": "btn_txlf7dVU",
+        "kind": "button",
+        "label": "Fix subscriptions",
+        "callbackData": "action-blocks:🔧 Unsubscribed threads",
+        "sessionKey": "agent:infra:discord:channel:1488183175245991966",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188250387382372",
+        "createdAt": 1774882128160,
+        "expiresAt": 1774883928160
       }
     ],
     "options": [
       {
         "emoji": "✅",
-        "label": "Mark ticket done",
-        "description": "Close this thread — subscription state feature is complete"
-      },
-      {
-        "emoji": "🔔",
-        "label": "Auto-subscribe Dom",
-        "description": "Make Dom auto-subscribe to new threads he creates"
-      },
-      {
-        "emoji": "🧪",
-        "label": "Test with Dom subscribed",
-        "description": "Have Dom join a thread and verify ✓ marker appears"
+        "title": "Thread cleanup",
+        "description": "Close this ticket since the feature is working",
+        "action": "Mark done"
       },
       {
         "emoji": "📊",
-        "label": "Show full status output",
-        "description": "Run the complete status tool to see everything together"
+        "title": "Status API integration",
+        "description": "Add subscription data to the status-api endpoint",
+        "action": "Integrate"
+      },
+      {
+        "emoji": "🔧",
+        "title": "Unsubscribed threads",
+        "description": "Two threads in #infra show as not subscribed",
+        "action": "Fix subscriptions"
       }
     ],
     "sessionKey": "agent:infra:discord:channel:1488183175245991966",
-    "messageId": "1488186428239384657",
-    "savedAt": 1774881693782
+    "messageId": "1488188250387382372",
+    "savedAt": 1774882128165
   },
   "1488183530344284160": {
     "entries": [
@@ -1106,8 +1143,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186441401110753",
-        "createdAt": 1774881696982,
-        "expiresAt": 1774883496982
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn_YK97HYhM",
@@ -1119,8 +1156,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186441401110753",
-        "createdAt": 1774881696982,
-        "expiresAt": 1774883496982
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn_o2rCWDBk",
@@ -1132,8 +1169,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186441401110753",
-        "createdAt": 1774881696982,
-        "expiresAt": 1774883496982
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
       },
       {
         "id": "btn_dDP3AARO",
@@ -1145,35 +1182,221 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186441401110753",
-        "createdAt": 1774881696982,
-        "expiresAt": 1774883496982
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_qUfbssGJ",
+        "kind": "button",
+        "label": "Test it now",
+        "callbackData": "action-blocks:🧪 Test it now",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187089299308768",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_mV8aUOsV",
+        "kind": "button",
+        "label": "Looks good, close it",
+        "callbackData": "action-blocks:✅ Looks good, close it",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187089299308768",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_SjE196V7",
+        "kind": "button",
+        "label": "Check the embed",
+        "callbackData": "action-blocks:🔍 Check the embed",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187089299308768",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_W-yCABos",
+        "kind": "button",
+        "label": "Still leaking",
+        "callbackData": "action-blocks:🐛 Still leaking",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187089299308768",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_2AE79xfN",
+        "kind": "button",
+        "label": "Check again",
+        "callbackData": "action-blocks:🔄 Routing still leaking",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187406220791869",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_YSmODn55",
+        "kind": "button",
+        "label": "Test it",
+        "callbackData": "action-blocks:🧪 Test the fix",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187406220791869",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_7kzRSeCM",
+        "kind": "button",
+        "label": "Investigate",
+        "callbackData": "action-blocks:🔍 Hook execution order",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187406220791869",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_1NPB9JJo",
+        "kind": "button",
+        "label": "Draft prompt",
+        "callbackData": "action-blocks:🔧 Fork prompt rewrite",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187860145410212",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_q0Y-OATT",
+        "kind": "button",
+        "label": "Test the fix",
+        "callbackData": "action-blocks:🧪 Verification test",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187860145410212",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_nk1Z5BZL",
+        "kind": "button",
+        "label": "Spec the format",
+        "callbackData": "action-blocks:📋 Routing output schema",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187860145410212",
+        "createdAt": 1774882123628,
+        "expiresAt": 1774968523628
+      },
+      {
+        "id": "btn_ilqwMurc",
+        "kind": "button",
+        "label": "Approve changes",
+        "callbackData": "action-blocks:✅ Patch review",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188252707098634",
+        "createdAt": 1774882128795,
+        "expiresAt": 1774883928795
+      },
+      {
+        "id": "btn_A-pK4WtJ",
+        "kind": "button",
+        "label": "Deploy now",
+        "callbackData": "action-blocks:🚀 Deploy fix",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188252707098634",
+        "createdAt": 1774882128795,
+        "expiresAt": 1774883928795
+      },
+      {
+        "id": "btn_kCg-Baj2",
+        "kind": "button",
+        "label": "Test it",
+        "callbackData": "action-blocks:🧪 Leak verification",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188252707098634",
+        "createdAt": 1774882128795,
+        "expiresAt": 1774883928795
+      },
+      {
+        "id": "btn_oywVt22e",
+        "kind": "button",
+        "label": "Close thread",
+        "callbackData": "action-blocks:🔒 Thread cleanup",
+        "sessionKey": "agent:infra:discord:channel:1488183530344284160",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188252707098634",
+        "createdAt": 1774882128795,
+        "expiresAt": 1774883928795
       }
     ],
     "options": [
       {
-        "emoji": "🧪",
-        "label": "Test it",
-        "description": "Send a message to verify routing advice no longer leaks"
-      },
-      {
         "emoji": "✅",
-        "label": "Close ticket",
-        "description": "Mark this issue as done and close the thread"
+        "title": "Patch review",
+        "description": "Check the routing prompt diff looks correct",
+        "action": "Approve changes"
       },
       {
-        "emoji": "🔍",
-        "label": "Check embed still works",
-        "description": "Confirm the Discord embed still shows routing info"
+        "emoji": "🚀",
+        "title": "Deploy fix",
+        "description": "Apply the updated routing prompt to OpenClaw config",
+        "action": "Deploy now"
       },
       {
-        "emoji": "🐛",
-        "label": "Still leaking",
-        "description": "Report that routing advice is still appearing in replies"
+        "emoji": "🧪",
+        "title": "Leak verification",
+        "description": "Test if routing advice still leaks after the fix",
+        "action": "Test it"
+      },
+      {
+        "emoji": "🔒",
+        "title": "Thread cleanup",
+        "description": "Close this ticket once the fix is confirmed",
+        "action": "Close thread"
       }
     ],
     "sessionKey": "agent:infra:discord:channel:1488183530344284160",
-    "messageId": "1488186441401110753",
-    "savedAt": 1774881696987
+    "messageId": "1488188252707098634",
+    "savedAt": 1774882128800
   },
   "1488183530205745374": {
     "entries": [
@@ -1187,8 +1410,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186492428882053",
-        "createdAt": 1774881715877,
-        "expiresAt": 1774968115877
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
       },
       {
         "id": "btn_lmRMxrAB",
@@ -1200,8 +1423,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186492428882053",
-        "createdAt": 1774881715877,
-        "expiresAt": 1774968115877
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
       },
       {
         "id": "btn_zNb-owsN",
@@ -1213,8 +1436,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186492428882053",
-        "createdAt": 1774881715877,
-        "expiresAt": 1774968115877
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
       },
       {
         "id": "btn_NLBkUkgv",
@@ -1226,8 +1449,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186492428882053",
-        "createdAt": 1774881715877,
-        "expiresAt": 1774968115877
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
       },
       {
         "id": "btn_1rkZoDtP",
@@ -1239,8 +1462,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186625338118185",
-        "createdAt": 1774881740951,
-        "expiresAt": 1774883540951
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
       },
       {
         "id": "btn_kCNi7tc_",
@@ -1252,8 +1475,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186625338118185",
-        "createdAt": 1774881740951,
-        "expiresAt": 1774883540951
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
       },
       {
         "id": "btn_H4RrClBH",
@@ -1265,8 +1488,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186625338118185",
-        "createdAt": 1774881740951,
-        "expiresAt": 1774883540951
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
       },
       {
         "id": "btn_XHXy6G4r",
@@ -1278,34 +1501,162 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488186625338118185",
-        "createdAt": 1774881740951,
-        "expiresAt": 1774883540951
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
+      },
+      {
+        "id": "btn_o2MD7c1L",
+        "kind": "button",
+        "label": "Test it",
+        "callbackData": "action-blocks:🧪 Live test",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187818554425375",
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
+      },
+      {
+        "id": "btn_HLvlW1yu",
+        "kind": "button",
+        "label": "Tweak design",
+        "callbackData": "action-blocks:🎨 Button styling",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187818554425375",
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
+      },
+      {
+        "id": "btn_Ho9dBy9v",
+        "kind": "button",
+        "label": "Handle errors",
+        "callbackData": "action-blocks:📋 Edge cases",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187818554425375",
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
+      },
+      {
+        "id": "btn_VQ9UqhAw",
+        "kind": "button",
+        "label": "Adjust styling",
+        "callbackData": "action-blocks:👀 Visual check",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187926855553176",
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
+      },
+      {
+        "id": "btn_TYEQu6qn",
+        "kind": "button",
+        "label": "Ship it",
+        "callbackData": "action-blocks:✅ Looks good",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187926855553176",
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
+      },
+      {
+        "id": "btn_5AABMmGc",
+        "kind": "button",
+        "label": "Fix handler",
+        "callbackData": "action-blocks:🐛 Button bug",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187926855553176",
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
+      },
+      {
+        "id": "btn_QAfxN9UR",
+        "kind": "button",
+        "label": "Test variants",
+        "callbackData": "action-blocks:🔄 Edge cases",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488187926855553176",
+        "createdAt": 1774882072415,
+        "expiresAt": 1774968472415
+      },
+      {
+        "id": "btn_AVa85w3X",
+        "kind": "button",
+        "label": "Fix parsing",
+        "callbackData": "action-blocks:🔍 Payload truncation",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188179059179703",
+        "createdAt": 1774882111180,
+        "expiresAt": 1774883911180
+      },
+      {
+        "id": "btn_Mdv-NUYH",
+        "kind": "button",
+        "label": "Test buttons",
+        "callbackData": "action-blocks:🧪 Button click test",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188179059179703",
+        "createdAt": 1774882111180,
+        "expiresAt": 1774883911180
+      },
+      {
+        "id": "btn_A4aTbZrI",
+        "kind": "button",
+        "label": "Show payload",
+        "callbackData": "action-blocks:📋 Webhook payload",
+        "sessionKey": "agent:infra:discord:channel:1488183530205745374",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488188179059179703",
+        "createdAt": 1774882111180,
+        "expiresAt": 1774883911180
       }
     ],
     "options": [
       {
+        "emoji": "🔍",
+        "title": "Payload truncation",
+        "description": "The callback data is getting cut off with backslash",
+        "action": "Fix parsing"
+      },
+      {
         "emoji": "🧪",
-        "label": "Test it now",
-        "description": "Send a message in another thread to trigger the card"
+        "title": "Button click test",
+        "description": "Verify actual action block buttons fire correctly",
+        "action": "Test buttons"
       },
       {
-        "emoji": "🎨",
-        "label": "Tweak styling",
-        "description": "Adjust colors, spacing, or layout of the card"
-      },
-      {
-        "emoji": "🐛",
-        "label": "Not showing up",
-        "description": "The card didn't appear — debug the plugin"
-      },
-      {
-        "emoji": "📐",
-        "label": "Change button layout",
-        "description": "Switch to inline buttons or grid layout"
+        "emoji": "📋",
+        "title": "Webhook payload",
+        "description": "Check what the webhook actually received from clicks",
+        "action": "Show payload"
       }
     ],
     "sessionKey": "agent:infra:discord:channel:1488183530205745374",
-    "messageId": "1488186625338118185",
-    "savedAt": 1774881740956
+    "messageId": "1488188179059179703",
+    "savedAt": 1774882111182
   }
 }
