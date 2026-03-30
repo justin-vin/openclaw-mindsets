@@ -17,10 +17,10 @@ export default function mindsetsTool(api) {
       required: ["action"],
     },
     async execute(_id, { action, name }) {
-      const cfg = api.pluginConfig;
-      if (action === "list") return { content: [{ type: "text", text: JSON.stringify({ ok: true, mindsets: listMindsets(cfg) }) }] };
+      
+      if (action === "list") return { content: [{ type: "text", text: JSON.stringify({ ok: true, mindsets: listMindsets() }) }] };
       if (action === "inspect") {
-        const m = resolveMindset(cfg, name);
+        const m = resolveMindset(null, name);
         if (!m) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Unknown: ${name}` }) }] };
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, mindset: m }) }] };
       }

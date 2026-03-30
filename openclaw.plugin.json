@@ -4,12 +4,6 @@
   "description": "Multiple agents acting as one. Thread-based context orchestration.",
   "configSchema": {
     "type": "object",
-    "properties": {
-      "guildId": { "type": "string" },
-      "botId": { "type": "string" },
-      "mainChannelId": { "type": "string" },
-      "mindsets": { "type": "object" }
-    },
     "additionalProperties": false
   },
   "skills": [

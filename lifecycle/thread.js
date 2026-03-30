@@ -48,6 +48,6 @@ Never self-close unprompted. When user says "done": brief summary, then \`close(
 `.trim();
 
 export function build(event, ctx, api) {
-  if (isMainSession(ctx, api.pluginConfig)) return null;
+  if (isMainSession(ctx)) return null;
   return THREAD_GROUNDING;
 }

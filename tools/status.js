@@ -17,7 +17,7 @@ export default function statusTool(api) {
     },
     async execute(_id, { threadId } = {}, ctx) {
       const logger = api.logger;
-      const cfg = api.pluginConfig;
+      
 
       if (threadId) {
         try {
@@ -31,9 +31,9 @@ export default function statusTool(api) {
       }
 
       try {
-        const mindsetList = listMindsets(cfg);
+        const mindsetList = listMindsets();
         const forumIds = new Set(mindsetList.map(m => m.forumId));
-        const { threads } = await discord.listActiveThreads(getGuildId(cfg), logger);
+        const { threads } = await discord.listActiveThreads(getGuildId(), logger);
 
         const grouped = {};
         for (const t of (threads || []).filter(t => forumIds.has(t.parent_id))) {

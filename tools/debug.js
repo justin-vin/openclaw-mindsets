@@ -18,11 +18,11 @@ export default function debugTool(api) {
     },
     async execute(_id, { action }) {
       const logger = api.logger;
-      const cfg = api.pluginConfig;
+      
 
       if (action === "health") {
         const checks = { mindsets: {} };
-        for (const m of listMindsets(cfg)) {
+        for (const m of listMindsets()) {
           try { await discord.api("GET", `/channels/${m.forumId}`, null, logger); checks.mindsets[m.name] = "ok"; }
           catch (e) { checks.mindsets[m.name] = e.message.substring(0, 100); }
         }
@@ -30,9 +30,9 @@ export default function debugTool(api) {
       }
 
       if (action === "zombies") {
-        const mindsets = listMindsets(cfg);
+        const mindsets = listMindsets();
         const forumIds = new Set(mindsets.map(m => m.forumId));
-        const { threads } = await discord.listActiveThreads(getGuildId(cfg), logger);
+        const { threads } = await discord.listActiveThreads(getGuildId(), logger);
         const zombies = [];
 
         for (const t of (threads || []).filter(t => forumIds.has(t.parent_id))) {

@@ -3,7 +3,7 @@
  */
 
 import * as discord from "../lib/discord.js";
-import { getBotId } from "../lib/config.js";
+import { getBotId, listMindsets } from "../lib/config.js";
 
 export default function updateTool(api) {
   return {
@@ -19,7 +19,6 @@ export default function updateTool(api) {
     },
     async execute(_id, { threadId, title, steer } = {}, ctx) {
       const logger = api.logger;
-      const cfg = api.pluginConfig;
 
       let target = threadId || ctx?.sessionKey?.match(/discord:channel:(\d+)/)?.[1];
       if (!target) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "No threadId" }) }] };
@@ -32,16 +31,16 @@ export default function updateTool(api) {
       }
 
       if (steer) {
-        const botId = getBotId(cfg);
-        const mindsets = Object.entries(cfg?.mindsets || {});
+        const botId = getBotId();
+        const mindsets = listMindsets();
         let steered = false;
-        for (const [name, m] of mindsets) {
+        for (const m of mindsets) {
           if (!m.webhookUrl) continue;
           try {
             await discord.webhookPost(m.webhookUrl, target, `<@${botId}> ${steer}`, "Justin", null);
             steered = true;
             break;
-          } catch { /* wrong forum's webhook */ }
+          } catch { /* wrong forum's webhook — try next */ }
         }
         results.steered = steered;
         if (!steered) results.steerError = "No webhook matched this thread";

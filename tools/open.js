@@ -21,7 +21,7 @@ export default function openTool(api) {
     },
     async execute(_id, { mindset: name, title, prompt }) {
       const logger = api.logger;
-      const m = resolveMindset(api.pluginConfig, name);
+      const m = resolveMindset(null, name);
       if (!m) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Unknown mindset: ${name}` }) }] };
 
       try {

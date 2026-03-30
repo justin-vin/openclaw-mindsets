@@ -62,7 +62,7 @@ export async function analyze(event, ctx, api) {
 
   const runtime = api.runtime;
   const logger = api.logger;
-  const cfg = api.pluginConfig;
+  
 
   try {
     const sessionFile = findSessionFile(ctx);
@@ -71,8 +71,8 @@ export async function analyze(event, ctx, api) {
     const forkFile = join(tmpdir(), `mindsets-fork-${Date.now()}.jsonl`);
     cpSync(sessionFile, forkFile);
 
-    const mindsets = listMindsets(cfg);
-    const isMain = isMainSession(ctx, cfg);
+    const mindsets = listMindsets();
+    const isMain = isMainSession(ctx);
 
     const prompt = `Analyze the user's last message. Current context: ${isMain ? "main channel" : `thread in #${ctx.agentId}`}.
 Available mindsets: ${mindsets.map(m => m.name).join(", ")}.
