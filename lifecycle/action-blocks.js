@@ -160,21 +160,39 @@ export function setup(api) {
       logger.info(`action-blocks: selected="${selected}"`);
 
       try {
-        // Delete button message + post quote
+        // Delete button message (webhook will be the only visible result)
         const msgId = ctx.interaction?.messageId;
         if (msgId && rawChId) {
           await discordApi("DELETE", `/channels/${rawChId}/messages/${msgId}`, null, logger);
-          await discordApi("POST", `/channels/${rawChId}/messages`, { content: `> ${selected}` }, logger);
         }
       } catch (e) {
-        logger.warn(`action-blocks: visual cleanup failed — ${e.message}`);
+        logger.warn(`action-blocks: delete failed — ${e.message}`);
       }
 
       // Send via webhook to trigger agent turn
       try {
-        const webhooks = loadWebhooks();
-        if (webhooks?.length && rawChId) {
-          const sent = await sendToThread(selected, rawChId, webhooks, { header: "Action Block" });
+        const webhooksMap = loadWebhooks();
+        // Convert map to array of {webhookUrl} for sendToThread
+        const webhooks = webhooksMap ? Object.values(webhooksMap).map((w) => ({
+          webhookUrl: `https://discord.com/api/webhooks/${w.webhookId}/${w.webhookToken}`,
+        })) : [];
+
+        if (webhooks.length && rawChId) {
+          // Send as plain text (no embed) — matches thread message style
+          let sent = false;
+          for (const wh of webhooks) {
+            if (!wh.webhookUrl) continue;
+            try {
+              const params = new URLSearchParams({ thread_id: rawChId });
+              await fetch(`${wh.webhookUrl}?${params}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content: selected, username: "Justin" }),
+              });
+              sent = true;
+              break;
+            } catch { /* try next webhook */ }
+          }
           logger.info(`action-blocks: webhook sent=${sent} → ${rawChId}`);
         } else {
           logger.warn(`action-blocks: no webhooks for ${rawChId}`);
