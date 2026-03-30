@@ -107,17 +107,28 @@ const THREAD_PROMPT = `Predict what the user will say next in this focused work 
 - "description": what the user would say or want done (30-100 chars, one clear sentence)
 - "action": short verb label for the button (max 20 chars)
 
-Be specific to the conversation context — not generic. Mix forward actions and clarifying questions.
-If the conversation includes a recent routing/housekeeping recommendation (e.g. close a thread, rename, open new thread), include a button to help act on it.
+CRITICAL RULES:
+1. If the assistant's last message asks a QUESTION — especially one with explicit choices (e.g. "X or Y?", "do you want A, B, or C?") — your predictions MUST directly mirror those choices. One button per option. Do NOT invent unrelated actions.
+2. If the assistant asked for confirmation (e.g. "want me to proceed?", "should I go ahead?") — include "Yes, go ahead" and "No" / "Hold on" as options.
+3. Only add extra suggestions beyond the question's options if you have fewer than 2 buttons.
+4. Be specific to the conversation context — not generic. Never suggest actions unrelated to the current discussion.
+5. If the conversation includes a routing/housekeeping recommendation (e.g. close a thread, rename, open new thread), include a button for it.
 
-Example: [{"emoji":"🚀","description":"Push the auth service changes to production and verify health checks","action":"Deploy now"},{"emoji":"🤔","description":"What happens when the API returns a 500?","action":"Investigate"},{"emoji":"🧪","description":"Run the full test suite and show coverage numbers","action":"Run tests"}]`;
+Example (question with choices): Assistant says "Should I use Redis or Postgres for the cache?"
+→ [{"emoji":"⚡","description":"Use Redis for the cache layer","action":"Redis"},{"emoji":"🐘","description":"Use Postgres for the cache layer","action":"Postgres"}]
+
+Example (open-ended): [{"emoji":"🚀","description":"Push the auth service changes to production and verify health checks","action":"Deploy now"},{"emoji":"🤔","description":"What happens when the API returns a 500?","action":"Investigate"}]`;
 
 const MAIN_PROMPT = `You are predicting what the user might want to do next in their main command channel. This is NOT a focused work thread — it's their home base for orchestrating across mindsets (${listMindsets().map(m => m.name).join(', ')}).
 
-Suggest a mix of:
-- Proactive actions they might want (check threads, open something new, review status)
+CRITICAL RULES:
+1. If the assistant's last message asks a QUESTION with explicit choices (e.g. "X or Y?", "should I do A or B?") — your predictions MUST directly mirror those choices. One button per option. Do NOT invent unrelated actions.
+2. If the assistant asked for confirmation — include "Yes, go ahead" and "No" / "Hold on" as options.
+3. Only suggest unrelated actions if the assistant's last message is NOT a question.
+
+When the assistant's last message is NOT a question, suggest a mix of:
+- Proactive actions (check threads, open something new, review status)
 - Vibe checks ("How's everything looking?", "What's stale?")
-- Fresh ideas based on what mindsets could help with
 - Housekeeping (close old threads, check email, calendar)
 
 Output ONLY a JSON array of 2-3 objects (vary the count naturally), each with:
@@ -125,9 +136,10 @@ Output ONLY a JSON array of 2-3 objects (vary the count naturally), each with:
 - "description": what the user would say or want done (30-100 chars, one clear sentence)
 - "action": short verb label for the button (max 20 chars)
 
-If the conversation includes a recent routing/housekeeping recommendation (e.g. close stale threads, open new thread), include a button to help act on it.
+If the conversation includes a routing/housekeeping recommendation (e.g. close stale threads, open new thread), include a button to help act on it.
 
-Example: [{"emoji":"📋","description":"Check all active threads across mindsets and see what's stale","action":"Show board"},{"emoji":"📬","description":"Scan for unread emails that need attention today","action":"Check email"}]`;
+Example (question): Assistant says "Open this in infra or dev?" → [{"emoji":"🔒","description":"Open it in infra","action":"Infra"},{"emoji":"💻","description":"Open it in dev","action":"Dev"}]
+Example (no question): [{"emoji":"📋","description":"Check all active threads across mindsets and see what's stale","action":"Show board"},{"emoji":"📬","description":"Scan for unread emails that need attention today","action":"Check email"}]`;
 
 // ─── Setup ───────────────────────────────────────────────────────────
 
@@ -215,22 +227,42 @@ export function setup(api) {
       // Send via webhook to trigger agent turn (as the clicking user)
       try {
         const webhooksMap = loadWebhooks();
-        // Convert map to array of {webhookUrl} for sendToThread
-        const webhooks = webhooksMap ? Object.values(webhooksMap).map((w) => ({
-          webhookUrl: `https://discord.com/api/webhooks/${w.webhookId}/${w.webhookToken}`,
-        })) : [];
 
-        if (webhooks.length && rawChId) {
-          // Send as embed matching thread open/steer style (dark, no accent)
-          const sent = await sendToThread(selected, rawChId, webhooks, {
-            header: null,
-            color: 0x2b2d31,
+        // Check if this channel has a direct webhook (main channel case)
+        const directWh = webhooksMap?.[rawChId];
+        if (directWh?.webhookId && directWh?.webhookToken) {
+          // Direct channel webhook — no thread_id needed
+          const webhookUrl = `https://discord.com/api/webhooks/${directWh.webhookId}/${directWh.webhookToken}`;
+          const embed = { description: selected, color: 0x2b2d31 };
+          const body = {
+            content: null,
             username: webhookUsername,
-            avatarUrl: webhookAvatarUrl,
+            embeds: [embed],
+          };
+          if (webhookAvatarUrl) body.avatar_url = webhookAvatarUrl;
+          const res = await fetch(webhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
           });
-          logger.info(`action-blocks: webhook sent=${sent} as ${webhookUsername} → ${rawChId}`);
+          logger.info(`action-blocks: direct webhook ${res.ok ? "sent" : "failed"} as ${webhookUsername} → ${rawChId}`);
         } else {
-          logger.warn(`action-blocks: no webhooks for ${rawChId}`);
+          // Thread context — use sendToThread with forum webhooks
+          const webhooks = webhooksMap ? Object.values(webhooksMap).map((w) => ({
+            webhookUrl: `https://discord.com/api/webhooks/${w.webhookId}/${w.webhookToken}`,
+          })) : [];
+
+          if (webhooks.length && rawChId) {
+            const sent = await sendToThread(selected, rawChId, webhooks, {
+              header: null,
+              color: 0x2b2d31,
+              username: webhookUsername,
+              avatarUrl: webhookAvatarUrl,
+            });
+            logger.info(`action-blocks: webhook sent=${sent} as ${webhookUsername} → ${rawChId}`);
+          } else {
+            logger.warn(`action-blocks: no webhooks for ${rawChId}`);
+          }
         }
       } catch (e) {
         logger.warn(`action-blocks: webhook error — ${e.message}`);
@@ -380,9 +412,19 @@ async function predict(ctx, runtime, logger, isMain = false) {
 
   if (!recentMessages.length) return null;
 
+  // Separate the last assistant message for emphasis
+  const lastAssistantMsg = [...recentMessages].reverse().find((m) => m.role === "assistant");
   const context = recentMessages
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}`)
     .join("\n\n");
+
+  // Build the prompt with the last assistant message highlighted
+  let promptParts = [`Recent conversation:\n${context}`];
+  if (lastAssistantMsg) {
+    promptParts.push(`\n⚠️ LAST ASSISTANT MESSAGE (this is what the user needs to respond to):\n"${lastAssistantMsg.text}"\n\nYour predictions MUST be relevant responses to this message. If it asks a question, mirror the options.`);
+  }
+  promptParts.push(isMain ? MAIN_PROMPT : THREAD_PROMPT);
+  const fullPrompt = promptParts.join("\n\n");
 
   const tempFile = join(tmpdir(), `action-blocks-${Date.now()}-${randomUUID().slice(0, 8)}.jsonl`);
   writeFileSync(tempFile, "");
@@ -392,7 +434,7 @@ async function predict(ctx, runtime, logger, isMain = false) {
       sessionId: `action-blocks-${Date.now()}`,
       sessionFile: tempFile,
       workspaceDir: ctx.workspaceDir || runtime.agent.resolveAgentWorkspaceDir(ctx.agentId || "main"),
-      prompt: `Recent conversation:\n${context}\n\n${isMain ? MAIN_PROMPT : THREAD_PROMPT}`,
+      prompt: fullPrompt,
       disableTools: true,
       timeoutMs: 12_000,
       runId: randomUUID(),
