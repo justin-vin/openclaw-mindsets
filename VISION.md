@@ -159,8 +159,8 @@ The v1 skill (`mindsets/SKILL.md`) is gone. Everything is injected directly via 
 
 ## Wake Mechanism
 
-> ⚠️ **PENDING** — Cross-agent/cross-session communication architecture under active research.
-> See `ARCHITECTURE.md` for the recommended approach once finalized.
+> See `TRUTH.md` for the validated cross-agent communication architecture.
+> Two primitives: CLI cold wake + Discord webhook steer. 17 tests, 0 failures.
 > Research history: thread #wake-path-fragility in #infra forum.
 
 ### What works today

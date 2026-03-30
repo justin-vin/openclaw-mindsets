@@ -1,7 +1,8 @@
-# Cross-Agent Communication Architecture
+# TRUTH — Cross-Agent Communication
 
+> Source of truth for how agents communicate across sessions and threads.
 > Owner: Infra. Last updated: 2026-03-29.
-> Status: **Validated.** All patterns tested and confirmed working.
+> Status: **Validated.** 17 tests, 0 failures across all 4 mindsets.
 
 ## Two Primitives
 
@@ -80,9 +81,11 @@ const webhook = await fetch(`https://discord.com/api/v10/channels/${forumId}/web
 | Forum | Channel ID | Webhook ID | Status |
 |-------|-----------|------------|--------|
 | #infra | 1487085177204379829 | 1487957064914309162 | ✅ Active |
+| #dev | 1487085181448884474 | 1487966953736896723 | ✅ Active |
 | #pa | 1487085185714618429 | 1487949761666617376 | ✅ Active |
-| #dev | 1487085181448884474 | — | Needs creation |
-| #wordware | 1487085189300748343 | — | Needs creation |
+| #wordware | 1487085189300748343 | 1487966955930390741 | ✅ Active |
+
+Webhook tokens stored in extension config (not in this doc).
 
 ## The Three Operations
 
