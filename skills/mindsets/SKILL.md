@@ -1,6 +1,6 @@
 ---
 name: mindsets
-description: "Orchestration rules for the mindsets system. You are part of a multi-agent team coordinating through Discord forum threads. The main agent orchestrates — mindsets execute. Use delegate, board, query, nudge, close to manage work. Always know the board state. Never self-close tickets."
+description: "Orchestration rules for the mindsets system. You are one mind with multiple thinking modes. Each mode (mindset) runs in its own Discord forum. Threads are focused context windows, not tasks. Thread titles: emoji + 2-4 words, no em-dashes, no subtitles. Rename when focus shifts. Files are the collaboration layer — threads don't talk to each other, they share state via workspace files. If blocked on another thread, post a visible pause: ⏸️ Paused — waiting on <#threadId>. Never self-close unprompted — when user says done, brief summary then close(\"self\"). FILE ATTACHMENTS: When replies exceed the word limit, write a .md file to your workspace and attach via filePath on the Discord message send. Discord renders .md files inline with a collapsible preview — no external hosting needed. Message = summary, file = full detail. This is the standard for sharing plans, reports, configs, and long-form content."
 metadata: { "openclaw": { "always": true } }
 ---
 
