@@ -196,7 +196,23 @@ export function setup(api) {
         logger.warn(`action-blocks: delete failed — ${e.message}`);
       }
 
-      // Send via webhook to trigger agent turn
+      // Resolve clicking user's identity for webhook impersonation
+      let webhookUsername = ctx.senderUsername || "User";
+      let webhookAvatarUrl = null;
+      if (ctx.senderId) {
+        try {
+          const user = await discordApi("GET", `/users/${ctx.senderId}`, null, logger);
+          if (user.avatar) {
+            webhookAvatarUrl = `https://cdn.discordapp.com/avatars/${ctx.senderId}/${user.avatar}.png?size=128`;
+          }
+          if (user.global_name) webhookUsername = user.global_name;
+          else if (user.username) webhookUsername = user.username;
+        } catch (e) {
+          logger.debug(`action-blocks: user fetch failed — ${e.message}`);
+        }
+      }
+
+      // Send via webhook to trigger agent turn (as the clicking user)
       try {
         const webhooksMap = loadWebhooks();
         // Convert map to array of {webhookUrl} for sendToThread
@@ -209,8 +225,10 @@ export function setup(api) {
           const sent = await sendToThread(selected, rawChId, webhooks, {
             header: null,
             color: 0x2b2d31,
+            username: webhookUsername,
+            avatarUrl: webhookAvatarUrl,
           });
-          logger.info(`action-blocks: webhook sent=${sent} → ${rawChId}`);
+          logger.info(`action-blocks: webhook sent=${sent} as ${webhookUsername} → ${rawChId}`);
         } else {
           logger.warn(`action-blocks: no webhooks for ${rawChId}`);
         }
