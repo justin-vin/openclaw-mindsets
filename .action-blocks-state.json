@@ -2369,5 +2369,71 @@
     "sessionKey": "agent:infra:discord:channel:1488190046829019426",
     "messageId": "1488191755018043412",
     "savedAt": 1774882963741
+  },
+  "1488192137387442226": {
+    "entries": [
+      {
+        "id": "btn_kcK_njWI",
+        "kind": "button",
+        "label": "Fix it",
+        "callbackData": "action-blocks:i=0",
+        "sessionKey": "agent:infra:discord:channel:1488192137387442226",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488192744697364671",
+        "createdAt": 1774883199829,
+        "expiresAt": 1774884999829
+      },
+      {
+        "id": "btn_DxYYpbsP",
+        "kind": "button",
+        "label": "Explain approach",
+        "callbackData": "action-blocks:i=1",
+        "sessionKey": "agent:infra:discord:channel:1488192137387442226",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488192744697364671",
+        "createdAt": 1774883199829,
+        "expiresAt": 1774884999829
+      },
+      {
+        "id": "btn_M-S11Ei_",
+        "kind": "button",
+        "label": "Verify format",
+        "callbackData": "action-blocks:i=2",
+        "sessionKey": "agent:infra:discord:channel:1488192137387442226",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488192744697364671",
+        "createdAt": 1774883199829,
+        "expiresAt": 1774884999829
+      }
+    ],
+    "options": [
+      {
+        "emoji": "🔧",
+        "title": "Option",
+        "description": "Go ahead and fix both bugs — patch the key mismatch and add persistence",
+        "action": "Fix it"
+      },
+      {
+        "emoji": "🤔",
+        "title": "Option",
+        "description": "How would you handle persistence across gateway restarts?",
+        "action": "Explain approach"
+      },
+      {
+        "emoji": "🧪",
+        "title": "Option",
+        "description": "Can you test what ctx.conversationId actually looks like in the handler?",
+        "action": "Verify format"
+      }
+    ],
+    "sessionKey": "agent:infra:discord:channel:1488192137387442226",
+    "messageId": "1488192744697364671",
+    "savedAt": 1774883199830
   }
 }

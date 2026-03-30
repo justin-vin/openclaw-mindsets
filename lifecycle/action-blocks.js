@@ -19,6 +19,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { api as discordApi, sendToThread } from "../lib/discord.js";
 import { getBotId, loadWebhooks, isMainSession } from "../lib/config.js";
+import { lastRoutingAdvice } from "./turn.js";
 
 const NAMESPACE = "action-blocks";
 const STATE_FILE = join(dirname(new URL(import.meta.url).pathname), "..", ".action-blocks-state.json");
@@ -366,7 +367,11 @@ async function predict(ctx, runtime, logger, isMain = false) {
       sessionId: `action-blocks-${Date.now()}`,
       sessionFile: tempFile,
       workspaceDir: ctx.workspaceDir || runtime.agent.resolveAgentWorkspaceDir(ctx.agentId || "main"),
-      prompt: `Recent conversation:\n${context}\n\n${isMain ? MAIN_PROMPT : THREAD_PROMPT}`,
+      prompt: `Recent conversation:\n${context}\n\n${(() => {
+        const chId = extractDiscordChannelId(ctx.sessionKey);
+        const advice = chId && lastRoutingAdvice.get(chId);
+        return advice ? `IMPORTANT: The routing classifier just recommended:\n${advice}\nInclude at least one button that helps the user act on this recommendation (e.g. close a thread, rename, open a new one).\n\n` : "";
+      })()}${isMain ? MAIN_PROMPT : THREAD_PROMPT}`,
       disableTools: true,
       timeoutMs: 12_000,
       runId: randomUUID(),
