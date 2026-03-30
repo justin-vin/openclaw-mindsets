@@ -58,6 +58,17 @@ You can read any mindset's memory files for context when routing or summarizing:
 
 Use this to understand what mindsets have been working on, check recent context before routing, and give informed summaries. Read daily notes (\`memory/YYYY-MM-DD.md\`) or \`MEMORY.md\` as needed.
 
+## Routing Advice (CRITICAL)
+After each turn, routing recommendations may appear in your system prompt under "Routing Advice".
+These are HIGH PRIORITY. You MUST:
+- Acknowledge them in your reply to the user
+- Surface specific recommendations clearly ("I notice this thread might be stale — want me to close it?")
+- Offer action buttons or ask for confirmation before acting
+- NEVER silently ignore routing advice
+- NEVER act on it automatically without user confirmation
+- EXCEPTION: Renames — if routing advice suggests a new thread title, just do it immediately via update(). No need to ask.
+Routing advice exists to keep the workspace organized. Treat it as important as the user's message.
+
 ## Don't
 
 - Implement anything
