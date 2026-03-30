@@ -12,23 +12,29 @@ import { randomUUID } from "node:crypto";
 import { unlinkSync, readFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { isMainSession, listMindsets } from "../lib/config.js";
+import { isMainSession, listMindsets, getBotId, loadWebhooks } from "../lib/config.js";
 import { sendToThread } from "../lib/discord.js";
 
 const MAIN_IDENTITY = `
 # You are main
 
-The user's home. A linear conversation that dispatches to focused threads.
+The user's home. A perpetual conversation that compacts but never closes.
 
 ## Your job
 
-Parallelization:
-- Single thing needing focus → open a thread
-- Multiple things → open multiple threads
-- Casual/simple → answer directly
-- Status request → call \`status()\` and summarize
+You are a router and productivity multiplier. You don't implement anything. Your value is surface awareness — knowing what's happening across all threads and mindsets, and helping the user parallelise.
 
-You don't implement anything. You're a concierge.
+You care about:
+- **Cognitive load** — the user should never hold more than one thing in their head
+- **Parallelism** — every focused thread is a productivity multiplier
+- **Surface awareness** — what's active, stale, blocked, or drifting across all mindsets
+- **Focus** — protect the user's attention. Route fast, summarize well, don't linger
+
+Dispatch rules:
+- Single thing needing focus → open a thread
+- Multiple things → open multiple threads in parallel
+- Casual/simple → answer directly (but be strict about what qualifies)
+- Status request → call \`status()\` and summarize the full surface
 
 ## Identity
 
@@ -40,7 +46,7 @@ Thread titles are the user's only navigation. Names must be clear, specific, sca
 
 ## Tools
 
-- \`status()\` — all active threads
+- \`status()\` — all active threads across all mindsets
 - \`open(mindset, title, prompt, context?, done?, refs?)\` — new thread
 - \`close(threadId)\` — close a thread
 - \`update(threadId, title?, steer?)\` — rename or redirect
@@ -50,7 +56,8 @@ Thread titles are the user's only navigation. Names must be clear, specific, sca
 ## Don't
 
 - Implement anything (open a thread)
-- Track threads — they're autonomous
+- Track thread progress — they're autonomous
+- Let the user accumulate open loops without dispatching them
 `.trim();
 
 export function getMainIdentity(ctx) {
@@ -71,6 +78,17 @@ export async function analyze(event, ctx, api) {
   // Webhook messages have a specific author ID that differs from the bot
   const promptText = event?.prompt || "";
   if (ctx.trigger === "webhook" || promptText.includes("📋")) return null;
+
+  // Guard: skip if the sender is the bot or one of our webhooks
+  const senderId = event?.metadata?.senderId || event?.metadata?.sender_id;
+  if (senderId) {
+    const botId = getBotId();
+    if (botId && senderId === botId) return null;
+    // Check if sender is one of our mindset webhooks
+    const webhooks = loadWebhooks();
+    const webhookIds = new Set(Object.values(webhooks).map(w => w.webhookId).filter(Boolean));
+    if (webhookIds.has(senderId)) return null;
+  }
 
   // Resolve the current session file by reading the store directly
   let entry;
@@ -127,10 +145,11 @@ Rules:
 - "answer directly" means this message truly belongs in this conversation AND would NOT benefit from being split into its own focused thread. Be strict.
 - If the conversation has drifted from its original topic, suggest a rename, a new thread, or both.
 - Multiple actions are allowed and encouraged (rename + open + close in one response).
+- Thread titles must be short: 2-4 words. Minimum viable description. Not sentences.
 
 Reply with ONE of:
 1. "answer directly" — this message belongs here and splitting would not help.
-2. Housekeeping instructions for the agent. Max 3 bullet points. Can include: renaming this thread, opening new threads, suggesting closing this thread, or asking the user to clarify something. Be specific and brief.
+2. Housekeeping instructions for the agent. Max 3 bullet points. Can include: renaming this thread, opening new threads, suggesting closing this thread, or asking the user to clarify something. Keep suggested titles to 2-4 words.
 
 Output ONLY the routing decision. No conversation. No greeting. No markdown headers. No emoji prefixes.`;
 
@@ -156,26 +175,9 @@ Output ONLY the routing decision. No conversation. No greeting. No markdown head
       return null;
     }
 
-    // Post visibly in Discord
-    const threadId = ctx.sessionKey?.match(/discord:channel:(\d+)/)?.[1];
-    if (threadId) {
-      if (reply.toLowerCase() === "answer directly") {
-        // React to the user's message instead of posting a block
-        try {
-          const { api: discordApi } = await import("../lib/discord.js");
-          // Get the latest message in the thread (the user's message)
-          const messages = await discordApi("GET", `/channels/${threadId}/messages?limit=1`, null, logger);
-          if (messages?.[0]?.id) {
-            await discordApi("PUT", `/channels/${threadId}/messages/${messages[0].id}/reactions/📋/@me`, null, logger);
-          }
-        } catch {}
-      } else {
-        // Post housekeeping block
-        const webhooks = listMindsets();
-        await sendToThread(reply, threadId, webhooks, { header: null, color: 0x2B2D31 }).catch(() => {});
-      }
-    }
-
+    // Routing advice is injected as prependContext — no need to post visibly.
+    // Posting via webhook caused feedback loops (webhook message → new turn → new analysis → repeat).
+    if (reply.toLowerCase() === "answer directly") return null;
     return `Routing advice: ${reply}`;
   } catch (e) {
     logger.warn("turn: analysis failed", { error: e.message });

@@ -25,7 +25,7 @@ export default function openTool(api) {
       type: "object",
       properties: {
         mindset: { type: "string", description: "Mindset name (e.g. 'infra', 'design-engineer')." },
-        title: { type: "string", description: "Thread title. Short, specific, scannable." },
+        title: { type: "string", description: "Thread title. 2-4 words max. Minimum viable description." },
         prompt: { type: "string", description: "Bootstrap message. Sets the thread's scope and context." },
         context: { type: "string", description: "Background, prior work, or why this matters. Optional but recommended." },
         done: { type: "string", description: "Acceptance criteria — what 'done' looks like. Optional but recommended." },

@@ -34,8 +34,8 @@ export default {
       // Static grounding
       const grounding = threadLifecycle.build(event, ctx, api);
       const mainId = turnLifecycle.getMainIdentity(ctx);
-      if (grounding) result.prependSystemContext = grounding;
       if (mainId) result.prependSystemContext = mainId;
+      else if (grounding) result.prependSystemContext = grounding;
 
       // Per-turn analysis
       const advice = await turnLifecycle.analyze(event, ctx, api);

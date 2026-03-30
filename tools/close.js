@@ -3,6 +3,7 @@
  */
 
 import * as discord from "../lib/discord.js";
+import { getAutoSubscribeIds } from "../lib/config.js";
 
 export default function closeTool(api) {
   return {
@@ -22,6 +23,11 @@ export default function closeTool(api) {
       }
 
       try {
+        // Remove auto-subscribed users before archiving
+        for (const uid of getAutoSubscribeIds()) {
+          try { await discord.removeThreadMember(target, uid, api.logger); }
+          catch {}
+        }
         await discord.archiveThread(target, api.logger);
         return { content: [{ type: "text", text: JSON.stringify({ ok: true, threadId: target }) }] };
       } catch (e) {

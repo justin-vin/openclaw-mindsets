@@ -13,7 +13,7 @@ export default function updateTool(api) {
       type: "object",
       properties: {
         threadId: { type: "string", description: "Thread to update. Omit for current." },
-        title: { type: "string", description: "New thread title." },
+        title: { type: "string", description: "New thread title. 2-4 words max." },
         steer: { type: "string", description: "Direction to inject into the thread." },
       },
     },
