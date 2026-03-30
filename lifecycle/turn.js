@@ -94,13 +94,11 @@ Reply with a brief recommendation: "answer directly", "open <mindset> '<title>'"
     const reply = result?.payloads?.[0]?.text;
     if (!reply) return null;
 
-    // Post visible block as a blockquote in Discord
+    // Post visible analysis in Discord
     const threadId = ctx.sessionKey?.match(/discord:channel:(\d+)/)?.[1];
     if (threadId) {
-      try {
-        const lines = reply.split("\n").map(l => `> ${l}`).join("\n");
-        await discord.sendMessage(threadId, `> 📋 ${lines.substring(2)}`, logger);
-      } catch {}
+      try { await discord.sendMessage(threadId, `📋 **Analysis:** ${reply}`, logger); }
+      catch {}
     }
 
     return `Routing advice: ${reply}`;
