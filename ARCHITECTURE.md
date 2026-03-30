@@ -1,36 +1,92 @@
 # Cross-Agent Communication Architecture
 
 > Owner: Infra. Last updated: 2026-03-29.
+> Status: **Validated.** All patterns tested and confirmed working.
 
-## Recommendation
+## Two Primitives
 
-One communication primitive: **`openclaw agent` CLI with explicit delivery.**
+### 1. Cold Wake: `openclaw agent` CLI
+
+For the first message to a new thread where no session exists yet.
 
 ```bash
-openclaw agent \
-  --agent <mindset> \
-  --message "<text>" \
-  --deliver \
-  --reply-channel discord \
+openclaw agent --agent <mindset> \
+  --message "<bootstrap>" \
+  --deliver --reply-channel discord \
   --reply-to "channel:<threadId>" \
   --timeout 300
 ```
 
-This is the only path that works for all cases — cold start, warm wake, cross-agent. It bypasses the gateway's session delivery system entirely and posts directly to Discord. Two real hops: CLI runs agent, CLI delivers to Discord.
+The CLI bypasses session delivery context entirely — `--deliver --reply-to` makes the CLI itself call Discord's API directly. This is the only path that works for cold starts.
 
-Everything else we tested fails. Don't use `/hooks/agent`, `gateway call agent`, `sessions_send`, or session file patching for cross-agent communication. They all break on Discord delivery.
+### 2. Steer: Discord Webhook
 
-## Why This Works (and nothing else does)
+For all subsequent messages to threads. One HTTP POST.
 
-OpenClaw's outbound delivery requires an in-memory channel binding created by a Discord inbound message. No API can create this binding. The CLI sidesteps the problem — `--deliver` + `--reply-to` make the CLI itself call Discord's API, completely bypassing session delivery context.
+```bash
+curl -X POST "<webhookUrl>?thread_id=<threadId>" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "<@BOT_ID> <message>", "username": "Justin", "avatar_url": "<justin_avatar>"}'
+```
+
+The webhook posts as a different Discord user identity. OpenClaw's self-filter checks `author.id === botUserId` — the webhook has a different author.id, so it passes. The message is processed as a normal inbound. The agent responds through standard Discord session delivery.
+
+**Urgent steer** (abort current work first):
+```js
+await webhookPost(threadId, `<@${BOT_ID}> /stop`);
+await sleep(1000);
+await webhookPost(threadId, `<@${BOT_ID}> ${message}`);
+```
+
+## Config Required
+
+```json5
+{
+  channels: {
+    discord: {
+      allowBots: true,  // process webhook messages (default: false)
+      guilds: {
+        "<guildId>": {
+          users: [
+            "<dom_id_1>", "<dom_id_2>",
+            "<infra_webhook_id>",    // one per forum
+            "<dev_webhook_id>",
+            "<pa_webhook_id>",
+            "<wordware_webhook_id>"
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+## Webhook Setup (one-time per forum)
+
+Webhooks are channel-scoped — one per forum channel.
+
+```js
+const webhook = await fetch(`https://discord.com/api/v10/channels/${forumId}/webhooks`, {
+  method: 'POST',
+  headers: { 'Authorization': `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ name: 'Justin Dispatch' })
+});
+// Store webhook.id + webhook.token
+// Add webhook.id to guilds.users allowlist
+```
+
+### Current Webhooks
+
+| Forum | Channel ID | Webhook ID | Status |
+|-------|-----------|------------|--------|
+| #infra | 1487085177204379829 | 1487957064914309162 | ✅ Active |
+| #pa | 1487085185714618429 | 1487949761666617376 | ✅ Active |
+| #dev | 1487085181448884474 | — | Needs creation |
+| #wordware | 1487085189300748343 | — | Needs creation |
 
 ## The Three Operations
 
-### 1. Open (create thread + start agent)
-
-```
-Extension creates Discord thread → posts bootstrap → spawns CLI → done
-```
+### Open (create thread + cold wake)
 
 ```js
 const thread = await discord.createThread(forumId, title);
@@ -44,43 +100,67 @@ spawn(which.sync('openclaw'), [
 ], { detached: true, stdio: 'ignore' });
 ```
 
-Fire-and-forget. Extension returns immediately.
-
-### 2. Steer (send follow-up to existing thread)
-
-Post a message in the thread via the `message` tool. This creates a real Discord inbound — the session picks it up and the agent responds through normal delivery. No CLI spawn needed.
+### Steer (follow-up to existing thread)
 
 ```js
-await api.tools.message({ action: 'send', channel: 'discord', target: `channel:${threadId}`, message: steerText });
+await fetch(`${webhookUrl}?thread_id=${threadId}`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    content: `<@${BOT_ID}> ${message}`,
+    username: 'Justin',
+    avatar_url: JUSTIN_AVATAR_URL
+  })
+});
 ```
 
-This only works when posted as a human (not the bot — bots ignore their own messages). For programmatic steering, the CLI cold-wake path works for the first message only. After that, the thread is autonomous — steer it by posting in Discord.
-
-### 3. Cross-thread state sharing
+### Cross-thread state sharing
 
 Files. No direct messaging between sessions.
 
-```
-Thread A writes → workspace file → Thread B reads
-```
+## Validated Test Results (2026-03-29)
 
-Bootstrap tells each thread which shared files to use. Read-before-write.
+| # | Test | Result |
+|---|------|--------|
+| 1 | CLI cold wake to new PA thread | ✅ 16s |
+| 2 | Webhook steer to PA thread (fresh) | ✅ 9s |
+| 3 | Webhook steer to Infra thread (fresh) | ✅ |
+| 4 | Double steer (two sequential messages) | ✅ Both processed in order |
+| 5 | Steer to existing thread | ✅ |
+| 6 | Special chars (quotes, backticks, emoji) | ✅ |
+| 7 | Race condition (steer while agent busy) | ✅ Queued, processed after current turn |
+| 8 | Urgent steer (/stop then message) | ✅ Aborted essay, processed urgent message |
+| 9–13 | Batch of 5 fresh thread steers | ✅ All 5 passed |
 
-## Silent Failure Modes
+**Total: 13 tests, 13 passes, 0 failures** (after correct config).
 
-The CLI spawn is fire-and-forget. If it fails, nobody knows.
+## Why This Works
 
-- **Binary not found / spawn error** → silent. Extension already returned success.
-- **Gateway down** → CLI exits to void. Silent.
-- **Model error** → gateway logs show it, but nothing in Discord.
+**Cold wake (CLI):** `--deliver --reply-to` is a direct instruction to the CLI process. No session lookup, no binding resolution. The CLI calls Discord's API itself.
 
-**Mitigation:** The `debug` tool checks for threads with bootstrap posted but no agent response after 5 minutes. That's the only safety net.
+**Steer (webhook):** Discord webhooks post as a different user identity (different `author.id`). OpenClaw's self-filter only checks `author.id === botUserId`. With `allowBots: true` and the webhook ID in the guild users allowlist, the message flows through normal inbound processing. The session's existing delivery binding handles the response.
+
+**Urgent steer:** `/stop` is a native OpenClaw command that aborts the current run and clears the queue. Sent via webhook, it interrupts the active turn. The follow-up steer message is then processed as the next turn.
+
+## Why Everything Else Failed
+
+| Approach | Failure Mode |
+|----------|-------------|
+| `sessions_send` | Delivers reply to sender, not thread |
+| `gateway call agent` | Needs in-memory channel binding (only from Discord inbound) |
+| `/hooks/agent` | Agent runs but Discord delivery fails (no delivery context) |
+| Bot `message` tool | Self-filter drops it (same author.id) |
+| Session file patching | Gateway uses runtime state, ignores persisted files |
+| v1 `/mindsets/wake` | Spawned wrong command (`gateway call agent` instead of `openclaw agent`) |
 
 ## Rules
 
-1. Always use `openclaw agent` CLI for cross-agent communication. No exceptions.
-2. Always `which openclaw` for the binary path. Never hardcode.
-3. Always detached spawn with `stdio: 'ignore'`. Extension must not wait.
-4. Files are the only shared state between threads.
-5. Main reads thread status from Discord messages. Never injects into thread sessions.
-6. Threads escalate to main by posting in #justin via the `message` tool.
+1. Cold wake = CLI spawn. Steer = webhook POST. No mixing.
+2. One webhook per forum channel. Store ID + token.
+3. Webhook messages must @mention the bot.
+4. Add all webhook IDs to the guild users allowlist.
+5. `which openclaw` for CLI binary path. Never hardcode.
+6. CLI spawns are detached with `stdio: 'ignore'`. Extension doesn't wait.
+7. Files are the only shared state between threads.
+8. Threads are autonomous after creation — steer only when needed.
+9. For urgent steers, send `/stop` first, wait 1s, then send the message.
