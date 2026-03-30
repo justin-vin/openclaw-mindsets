@@ -102,7 +102,7 @@ const blockState = new Map();
 /** Channels currently generating predictions */
 const generating = new Set();
 
-const THREAD_PROMPT = `Predict what the user will say next in this focused work thread. Output ONLY a JSON array of 2-4 objects (vary the count naturally), each with:
+const THREAD_PROMPT = `Predict what the user will say next in this focused work thread. Output ONLY a JSON array of 2-3 objects (vary the count naturally), each with:
 - "emoji": a relevant emoji
 - "description": what the user would say or want done (30-100 chars, one clear sentence)
 - "action": short verb label for the button (max 20 chars)
@@ -119,7 +119,7 @@ Suggest a mix of:
 - Fresh ideas based on what mindsets could help with
 - Housekeeping (close old threads, check email, calendar)
 
-Output ONLY a JSON array of 2-4 objects (vary the count naturally), each with:
+Output ONLY a JSON array of 2-3 objects (vary the count naturally), each with:
 - "emoji": a relevant emoji
 - "description": what the user would say or want done (30-100 chars, one clear sentence)
 - "action": short verb label for the button (max 20 chars)
@@ -371,7 +371,7 @@ async function predict(ctx, runtime, logger, isMain = false) {
       timeoutMs: 12_000,
       runId: randomUUID(),
       extraSystemPrompt:
-        'Output ONLY a JSON array of 2-4 objects with "emoji", "description" (30-100 chars, one sentence), and "action" (short verb, max 20 chars) keys. No markdown fences, no explanation, no preamble.',
+        'Output ONLY a JSON array of 2-3 objects with "emoji", "description" (30-100 chars, one sentence), and "action" (short verb, max 20 chars) keys. No markdown fences, no explanation, no preamble.',
     });
 
     const text = result?.payloads?.[0]?.text?.trim();
@@ -408,7 +408,7 @@ async function predict(ctx, runtime, logger, isMain = false) {
           action: (item.action || item.label || "Go").slice(0, 20),
         };
       })
-      .slice(0, 4);
+      .slice(0, 3);
   } catch (e) {
     logger.debug(`action-blocks: predict failed — ${e.message}`);
     return null;

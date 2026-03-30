@@ -2094,8 +2094,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488190896435630181",
-        "createdAt": 1774882759038,
-        "expiresAt": 1774884559038
+        "createdAt": 1774882779775,
+        "expiresAt": 1774969179775
       },
       {
         "id": "btn_u3Yrxhc4",
@@ -2107,8 +2107,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488190896435630181",
-        "createdAt": 1774882759038,
-        "expiresAt": 1774884559038
+        "createdAt": 1774882779775,
+        "expiresAt": 1774969179775
       },
       {
         "id": "btn_ALdPTJvc",
@@ -2120,8 +2120,8 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488190896435630181",
-        "createdAt": 1774882759038,
-        "expiresAt": 1774884559038
+        "createdAt": 1774882779775,
+        "expiresAt": 1774969179775
       },
       {
         "id": "btn_HLpRfqW0",
@@ -2133,38 +2133,90 @@
         "accountId": "default",
         "reusable": true,
         "messageId": "1488190896435630181",
-        "createdAt": 1774882759038,
-        "expiresAt": 1774884559038
+        "createdAt": 1774882779775,
+        "expiresAt": 1774969179775
+      },
+      {
+        "id": "btn_bDK4SAzZ",
+        "kind": "button",
+        "label": "Test it",
+        "callbackData": "action-blocks:i=0",
+        "sessionKey": "agent:infra:discord:channel:1488190046829019426",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488191127210426470",
+        "createdAt": 1774882814129,
+        "expiresAt": 1774884614129
+      },
+      {
+        "id": "btn_HbwyVU34",
+        "kind": "button",
+        "label": "Show diff",
+        "callbackData": "action-blocks:i=1",
+        "sessionKey": "agent:infra:discord:channel:1488190046829019426",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488191127210426470",
+        "createdAt": 1774882814129,
+        "expiresAt": 1774884614129
+      },
+      {
+        "id": "btn_LnR697oR",
+        "kind": "button",
+        "label": "Close ticket",
+        "callbackData": "action-blocks:i=2",
+        "sessionKey": "agent:infra:discord:channel:1488190046829019426",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488191127210426470",
+        "createdAt": 1774882814129,
+        "expiresAt": 1774884614129
+      },
+      {
+        "id": "btn_jgmz3CZM",
+        "kind": "button",
+        "label": "Check persistence",
+        "callbackData": "action-blocks:i=3",
+        "sessionKey": "agent:infra:discord:channel:1488190046829019426",
+        "agentId": "infra",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488191127210426470",
+        "createdAt": 1774882814129,
+        "expiresAt": 1774884614129
       }
     ],
     "options": [
       {
         "emoji": "🧪",
         "title": "Option",
-        "description": "Let me test it — can you trigger a button tap so we can verify the full text comes through?",
+        "description": "Let me test it — can you trigger a button tap so I can verify the full text comes through?",
         "action": "Test it"
       },
       {
         "emoji": "🔍",
         "title": "Option",
-        "description": "What happens if the in-memory state is lost after a gateway restart?",
-        "action": "Check persistence"
+        "description": "Show me the actual code changes you made to action-blocks.js",
+        "action": "Show diff"
       },
       {
         "emoji": "✅",
         "title": "Option",
-        "description": "Works, close this ticket",
+        "description": "Looks good, close this ticket",
         "action": "Close ticket"
       },
       {
-        "emoji": "📋",
+        "emoji": "⚠️",
         "title": "Option",
-        "description": "Show me the exact code changes you made so I can review them",
-        "action": "Show diff"
+        "description": "What happens if the in-memory state is lost between gateway restarts?",
+        "action": "Check persistence"
       }
     ],
     "sessionKey": "agent:infra:discord:channel:1488190046829019426",
-    "messageId": "1488190896435630181",
-    "savedAt": 1774882759042
+    "messageId": "1488191127210426470",
+    "savedAt": 1774882814135
   }
 }

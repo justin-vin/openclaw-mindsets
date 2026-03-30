@@ -248,7 +248,7 @@ Output routing bullets or "answer directly". Nothing else.`;
     if (reply.toLowerCase() === "answer directly") {
       // Post green "on track" embed for visibility
       if (channelId) {
-        const onTrackText = isMain ? "✅ On topic" : "✅ Conversation on track";
+        const onTrackText = isMain ? "✅ Workspace organized" : "✅ Thread on track";
         try {
           await sendEmbed(channelId, { footer: { text: onTrackText } }, logger);
           logger.info(`turn: posted on-track embed to channel=${channelId}`);
