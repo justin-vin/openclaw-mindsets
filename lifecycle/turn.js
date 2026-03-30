@@ -2,17 +2,18 @@
  * lifecycle/turn.js — Per-turn message analysis + main identity.
  *
  * getMainIdentity(ctx) → static main grounding (prependSystemContext)
- * analyze(event, ctx, api) → per-turn advice (prependContext)
+ * analyze(event, ctx, api) → per-turn routing advice (prependContext)
  *
- * Analysis: build ephemeral JSONL from event.messages → runEmbeddedPiAgent → get advice.
- * No visible Discord posts. No session file disk reads. All data comes from the hook event.
+ * Analysis: branch current session via SessionManager → runEmbeddedPiAgent on branch
+ * → get routing advice → cleanup branch → inject as prependContext.
  */
 
 import { randomUUID } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
+import { unlinkSync, readFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { isMainSession, listMindsets } from "../lib/config.js";
+import { sendToThread } from "../lib/discord.js";
 
 const MAIN_IDENTITY = `
 # You are main
@@ -63,65 +64,52 @@ export async function analyze(event, ctx, api) {
   const runtime = api.runtime;
   const logger = api.logger;
 
-  // Guard: skip if this is the Pi analysis agent's own embedded run (recursive hook call).
-  // The analysis session uses a distinctive sessionId prefix.
+  // Guard: skip recursive calls from the analysis fork itself
   if (ctx.sessionId?.startsWith("mindsets-analysis-")) return null;
 
-  // Extract ONLY the current user message for routing classification.
-  // Full conversation context causes Opus to engage with the content instead of classifying.
-  const currentPrompt = event?.prompt;
-  if (!currentPrompt) return null;
-  
-  // Extract plain text from the prompt (strip metadata/envelope if present)
-  const userText = extractUserText(currentPrompt);
-  if (!userText || userText.length < 5) return null;
-  
-  // Build minimal JSONL with just this one user message
-  const recentMessages = [{ role: "user", content: userText }];
-  
-  logger.debug(`turn: classifying message (${userText.length} chars): "${userText.slice(0, 60)}"`);
+  // Guard: skip if the inbound is a routing block we posted (prevents loop)
+  const promptText = event?.prompt || "";
+  if (promptText.includes("📋") && /📋\s*(answer directly|open |rename |split into)/.test(promptText)) return null;
 
-  const forkFile = join(tmpdir(), `mindsets-fork-${Date.now()}-${randomUUID().slice(0, 8)}.jsonl`);
-
+  // Resolve the current session file by reading the store directly
+  let entry;
   try {
-    // Build proper session JSONL with header + message entries
-    const now = new Date().toISOString();
-    const sessionHeader = JSON.stringify({
-      type: "session",
-      version: 3,
-      id: randomUUID(),
-      timestamp: now,
-      cwd: "/"
-    });
+    const agentId = ctx.agentId || "main";
+    const home = process.env.OPENCLAW_HOME || `${process.env.HOME}/.openclaw`;
+    const storePath = join(home, "agents", agentId, "sessions", "sessions.json");
+    const store = JSON.parse(readFileSync(storePath, "utf-8"));
+    entry = store?.[ctx.sessionKey];
+    if (!entry?.sessionFile) {
+      logger.warn(`turn: no session file — key=${ctx.sessionKey} keys=${Object.keys(store || {}).length}`);
+      return null;
+    }
+    logger.info(`turn: forking session — key=${ctx.sessionKey} file=${entry.sessionFile}`);
+  } catch (e) {
+    logger.warn(`turn: store read failed — ${e.message}`);
+    return null;
+  }
 
-    let parentId = null;
-    const msgLines = recentMessages.map(m => {
-      const id = randomUUID().slice(0, 8);
-      const entry = JSON.stringify({
-        type: "message",
-        id,
-        parentId,
-        timestamp: now,
-        message: m
-      });
-      parentId = id;
-      return entry;
-    });
+  // Fork: copy session to /tmp (avoids file lock held by the active turn).
+  // runEmbeddedPiAgent handles SessionManager internally on its own lane.
+  let branchedFile;
+  try {
+    branchedFile = join(tmpdir(), `mindsets-fork-${Date.now()}-${randomUUID().slice(0, 8)}.jsonl`);
+    copyFileSync(entry.sessionFile, branchedFile);
+    logger.info(`turn: forked to ${branchedFile}`);
+  } catch (e) {
+    logger.warn(`turn: session fork failed — ${e.message}`);
+    return null;
+  }
 
-    const jsonl = [sessionHeader, ...msgLines].join("\n") + "\n";
-    writeFileSync(forkFile, jsonl);
+  const mindsets = listMindsets();
+  const isMain = isMainSession(ctx);
 
-    logger.debug(`turn: JSONL written entries=${msgLines.length + 1} messages=${recentMessages.length}`);
-
-    const mindsets = listMindsets();
-    const isMain = isMainSession(ctx);
-
-    const prompt = `ROUTING ANALYSIS ONLY. Do not respond to the conversation. Do not help. Do not answer questions.
+  const prompt = `ROUTING ANALYSIS ONLY. Do not respond to the conversation. Do not help. Do not answer questions.
 
 Context: ${isMain ? "main channel" : `thread in #${ctx.agentId}`}.
 Mindsets: ${mindsets.map(m => m.name).join(", ")}.
 
-Based on the user's last message above, reply with EXACTLY ONE of:
+Based on the user's last message, reply with EXACTLY ONE of:
 - "answer directly" (message is in scope for current context)
 - "open <mindset> '<title>'" (needs a new thread)
 - "rename '<new title>'" (thread title should change)
@@ -129,24 +117,33 @@ Based on the user's last message above, reply with EXACTLY ONE of:
 
 One line only. No explanation. No markdown. No conversation.`;
 
+  try {
     const result = await runtime.agent.runEmbeddedPiAgent({
       sessionId: `mindsets-analysis-${Date.now()}`,
-      sessionFile: forkFile,
+      sessionFile: branchedFile,
       workspaceDir: ctx.workspaceDir || runtime.agent.resolveAgentWorkspaceDir(ctx.agentId || "main"),
       prompt,
       disableTools: true,
-      timeoutMs: 10000,
+      timeoutMs: 15000,
       runId: randomUUID(),
       extraSystemPrompt: "You are a silent routing classifier. Your ONLY job is to output a routing decision. Never respond to the conversation content. Never help. Never answer questions. Output exactly one routing decision line.",
     });
 
     const reply = result?.payloads?.[0]?.text?.trim();
+    logger.info(`turn: fork reply — "${reply?.slice(0, 100)}"`);
     if (!reply) return null;
 
-    // Validate output — discard if Pi echoed its own instructions back
+    // Discard if the model echoed its own instructions
     if (looksLikePromptEcho(reply)) {
       logger.warn("turn: analysis returned prompt echo, discarding");
       return null;
+    }
+
+    // Post visibly in Discord
+    const threadId = ctx.sessionKey?.match(/discord:channel:(\d+)/)?.[1];
+    if (threadId) {
+      const webhooks = listMindsets();
+      await sendToThread(`📋 ${reply}`, threadId, webhooks, { header: null, color: 0x2B2D31 }).catch(() => {});
     }
 
     return `Routing advice: ${reply}`;
@@ -154,63 +151,17 @@ One line only. No explanation. No markdown. No conversation.`;
     logger.warn("turn: analysis failed", { error: e.message });
     return null;
   } finally {
-    try { rmSync(forkFile); } catch {}
+    try { unlinkSync(branchedFile); } catch {}
   }
 }
 
-/**
- * Extract the actual user message text from OpenClaw's prompt,
- * stripping envelope metadata, conversation info blocks, etc.
- */
-function extractUserText(prompt) {
-  if (!prompt) return null;
-  
-  // Look for the actual message content after the UNTRUSTED blocks
-  // OpenClaw wraps messages in <<<EXTERNAL_UNTRUSTED_CONTENT>>> blocks
-  const untrustedMatch = prompt.match(/UNTRUSTED Discord message body\n([\s\S]*?)<<<END_EXTERNAL_UNTRUSTED_CONTENT/);
-  if (untrustedMatch) {
-    const text = untrustedMatch[1].trim();
-    // Skip media-only messages
-    if (text === "<media:document> (1 file)") return null;
-    return text || null;
-  }
-  
-  // Look for "User text:" transcription blocks (voice messages)
-  const transcriptMatch = prompt.match(/Transcript:\n[\s\S]*?\n(\[[\d:.]+\s*-->\s*[\d:.]+\]\s*.+)/);
-  if (transcriptMatch) {
-    // Extract all transcript lines
-    const lines = prompt.match(/\[\d+:\d+\.\d+\s*-->\s*\d+:\d+\.\d+\]\s*(.+)/g);
-    if (lines) {
-      return lines.map(l => l.replace(/\[\d+:\d+\.\d+\s*-->\s*\d+:\d+\.\d+\]\s*/, "")).join(" ");
-    }
-  }
-  
-  // Fallback: if no envelope found, use the raw prompt but skip metadata blocks
-  const stripped = prompt
-    .replace(/Conversation info \(untrusted metadata\):[\s\S]*?```\n/g, "")
-    .replace(/Sender \(untrusted metadata\):[\s\S]*?```\n/g, "")
-    .replace(/<<<EXTERNAL_UNTRUSTED_CONTENT[\s\S]*?<<<END_EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>/g, "")
-    .replace(/Untrusted context[\s\S]*?<<<END_EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>/g, "")
-    .replace(/Routing advice:[\s\S]*?\n\n/g, "")
-    .trim();
-  
-  return stripped || null;
-}
-
-/**
- * Detect if the Pi agent echoed its own prompt/instructions back.
- * Common when the model has no real user content to analyze.
- */
 function looksLikePromptEcho(text) {
   const lower = text.toLowerCase();
   const echoSignals = [
-    "analyze the user's last message",
-    "reply with a brief recommendation",
-    "you are a routing advisor",
-    "available mindsets:",
-    "current context:",
-    "one or two lines max",
+    "routing analysis only",
+    "do not respond to the conversation",
+    "you are a silent routing classifier",
+    "one line only",
   ];
-  const matches = echoSignals.filter(s => lower.includes(s));
-  return matches.length >= 2;
+  return echoSignals.filter(s => lower.includes(s)).length >= 2;
 }

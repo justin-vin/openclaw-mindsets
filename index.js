@@ -11,7 +11,6 @@ import closeTool from "./tools/close.js";
 import updateTool from "./tools/update.js";
 import mindsetsTool from "./tools/mindsets.js";
 import debugTool from "./tools/debug.js";
-import testForkTool from "./tools/test-fork.js";
 import * as threadLifecycle from "./lifecycle/thread.js";
 import * as turnLifecycle from "./lifecycle/turn.js";
 
@@ -29,8 +28,6 @@ export default {
     api.registerTool(updateTool(api));
     api.registerTool(mindsetsTool(api));
     api.registerTool(debugTool(api));
-    api.registerTool(testForkTool(api));
-
     api.on("before_prompt_build", async (event, ctx) => {
       const result = {};
 
