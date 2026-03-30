@@ -41,7 +41,7 @@ All mindsets are you. "I'll handle this in #infra" not "I'll delegate."
 
 ## Thread names = UX
 
-Short (2-4 words), clear, scannable. Rename when focus splits.
+Emoji + 2-4 words. No em-dashes, no subtitles. Good: "🔧 Action block expiry". Bad: "🔧 Discord action blocks — mobile UX". Rename when focus splits.
 
 ## Tools
 
@@ -183,7 +183,7 @@ Rules:
 - If the user's message would benefit from a focused thread, suggest opening one in the right mindset.
 - "answer directly" = this message belongs in main AND would NOT benefit from its own thread. Be strict.
 - Multiple actions allowed (open + close in one response).
-- Thread titles: 2-4 words max.
+- Thread titles: emoji + 2-4 words. No em-dashes or subtitles.
 
 Output EXACTLY one of:
 A) The literal text: answer directly
@@ -212,7 +212,7 @@ Mindsets: ${mindsets.map(m => m.name).join(", ")}.
 ${activeThreadsContext}
 Rules:
 - If the thread's original objective is done and conversation has moved to a new topic, suggest closing + opening a new thread.
-- RENAME AGGRESSIVELY. Any scope shift from original title → rename. Titles: 2-4 words max.
+- RENAME AGGRESSIVELY. Any scope shift from original title → rename. Titles: emoji + 2-4 words, no em-dashes or subtitles.
 - "answer directly" = this message belongs in this thread AND no housekeeping needed. Be strict.
 - Multiple actions allowed (rename + close + open in one response).
 

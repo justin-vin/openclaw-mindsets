@@ -43,7 +43,7 @@ Update an existing thread. Two capabilities, one tool:
 - **`steer`** — inject direction into the thread's conversation. Main tells the thread what to do next without Dom having to context-switch.
 
 Examples:
-- `update(threadId, title: "DNS cleanup — TTLs")` — rename only
+- `update(threadId, title: "🔧 DNS TTL cleanup")` — rename only
 - `update(threadId, steer: "Also check TTL values on the A records")` — steer only
 - `update(threadId, title: "...", steer: "...")` — both
 

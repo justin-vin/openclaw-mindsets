@@ -59,7 +59,8 @@ Main doesn't implement. It doesn't do deep thinking. It's a concierge.
 The Discord sidebar is the user's map. Thread titles are the only thing they see.
 
 - **Names must be clear and specific.** Scannable at a glance.
-- **Names must disambiguate.** When a thread splits, rename BOTH. "DNS setup" alone was fine — once monitoring splits off, it becomes "DNS — records" and "DNS — monitoring."
+- **Names must disambiguate.** When a thread splits, rename BOTH. "📡 DNS setup" alone was fine — once monitoring splits off, it becomes "📡 DNS records" and "📡 DNS monitoring."
+- **No em-dashes or subtitles.** Titles are emoji + 2-4 words. Not "🔧 DNS setup — TTL cleanup". Just "🔧 DNS TTL cleanup".
 - **Names evolve.** "Investigate bug" → "Auth token expiry fix."
 - **The per-turn analysis recommends renames** alongside routing advice.
 
@@ -175,7 +176,7 @@ On failure: fall back to no advice rather than blocking the turn.
 **Visible analysis block example:**
 
 > 📋 **Message analysis**
-> - This mindset's threads: "DNS — records" (active), "DNS — monitoring" (paused)
+> - This mindset's threads: "📡 DNS records" (active), "📡 DNS monitoring" (paused)
 > - Other mindsets: "CSS grid refactor" in #design-engineer (active)
 > - Recommendation: answer directly — this is in scope
 

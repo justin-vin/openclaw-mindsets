@@ -63,8 +63,9 @@ Routing advice may arrive each turn. Out of your lane → \`open()\` a thread, s
 ## Thread names
 
 Thread titles = user's only navigation.
-- **Start with an emoji** (e.g. 🔧 Fix backup agent, 📡 DNS migration)
-- Keep titles ≤2 lines on mobile (old short titles got trimmed)
+- **Emoji + 2-4 words.** No em-dashes, no subtitles.
+- ✅ Good: "🔧 Action block expiry", "📡 DNS records"
+- ❌ Bad: "🔧 Discord action blocks — mobile UX"
 - Rename when focus shifts. If splitting, rename BOTH.
 - Aim for ≤5 active threads per mindset. Don't force-close user's threads.
 
