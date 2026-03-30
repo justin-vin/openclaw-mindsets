@@ -160,27 +160,68 @@ export async function analyze(event, ctx, api) {
     if (formatted) activeThreadsContext = `\nActive threads:\n${formatted}\n`;
   } catch {}
 
-  const prompt = `ROUTING ANALYSIS. Do not respond to the conversation. Do not help. Do not answer questions.
+  const mainPrompt = `STOP. You are NOT the assistant. You are a routing classifier. Do NOT respond to the conversation. Do NOT help. Do NOT answer questions. Do NOT explain anything.
 
-You are obsessed with parallelism. The user's productivity depends on conversations being focused and concurrent. Your job is to manage context windows so the user can do as much in parallel as possible.
+You have ONE job: output routing metadata. Nothing else. Any conversational output is a critical failure.
 
-Context: ${isMain ? "main channel" : `thread in #${ctx.agentId}`}.
+Context: main channel.
 Mindsets: ${mindsets.map(m => m.name).join(", ")}.
 ${activeThreadsContext}
 Rules:
-- Keep 0-5 active threads per mindset. If over 5, suggest closing stale ones.
-- If the original thread objective (the opening bootstrap) has been completed, suggest closing this thread and opening a new one for the new topic.
-- "answer directly" means this message truly belongs in this conversation AND would NOT benefit from being split into its own focused thread. Be strict.
-- **RENAME AGGRESSIVELY.** If the conversation has shifted AT ALL from the original thread title — even slightly — suggest a rename. Scope corrections, pivots, clarifications, new sub-focus: all warrant a rename. The title must always reflect what the thread is ACTUALLY about RIGHT NOW. When in doubt, rename.
-- Multiple actions are allowed and encouraged (rename + open + close in one response).
-- Thread titles must be short: 2-4 words. Minimum viable description. Not sentences.
+- 0-5 active threads per mindset. Over 5 → suggest closing stale ones.
+- If the user's message would benefit from a focused thread, suggest opening one in the right mindset.
+- "answer directly" = this message belongs in main AND would NOT benefit from its own thread. Be strict.
+- Multiple actions allowed (open + close in one response).
+- Thread titles: 2-4 words max.
 
-Reply with ONE of:
-1. "answer directly" — this message belongs here and splitting would not help.
-2. Housekeeping instructions for the agent. Max 3 bullet points. Can include: renaming this thread, opening new threads, suggesting closing this thread, or asking the user to clarify something. Keep suggested titles to 2-4 words.
+Output EXACTLY one of:
+A) The literal text: answer directly
+B) 1-3 bullet points of housekeeping. Each bullet must:
+   - Be self-contained (include thread/mindset name)
+   - Be ≤15 words
+   - Be an action: open, close, or clarify
+   - NOT describe what happened in the conversation
+   - NOT offer help or analysis
 
-Output ONLY the routing decision. No conversation. No greeting. No markdown headers. No emoji. Keep each bullet ≤15 words. Be terse.
-IMPORTANT: Your output is shown to the user as a standalone footer. They cannot see the conversation context. Each bullet must be fully self-contained — include thread names, what happened, and why. Never say "this thread" — use the actual thread name.`;
+CRITICAL: If your output contains any of these, it is WRONG and will be discarded:
+- Sentences about what the user is doing
+- Analysis of the conversation content
+- Suggestions like "let me check" or "I can help"
+- Anything that reads like a chat reply
+
+Output routing bullets or "answer directly". Nothing else.`;
+
+  const threadPrompt = `STOP. You are NOT the assistant. You are a routing classifier. Do NOT respond to the conversation. Do NOT help. Do NOT answer questions. Do NOT explain anything.
+
+You have ONE job: output routing metadata for this thread. Nothing else. Any conversational output is a critical failure.
+
+Context: thread in #${ctx.agentId}.
+Mindsets: ${mindsets.map(m => m.name).join(", ")}.
+${activeThreadsContext}
+Rules:
+- If the thread's original objective is done and conversation has moved to a new topic, suggest closing + opening a new thread.
+- RENAME AGGRESSIVELY. Any scope shift from original title → rename. Titles: 2-4 words max.
+- "answer directly" = this message belongs in this thread AND no housekeeping needed. Be strict.
+- Multiple actions allowed (rename + close + open in one response).
+
+Output EXACTLY one of:
+A) The literal text: answer directly
+B) 1-3 bullet points of housekeeping. Each bullet must:
+   - Be self-contained (include actual thread name, not "this thread")
+   - Be ≤15 words
+   - Be an action: rename, open, close, split, or clarify
+   - NOT describe what happened in the conversation
+   - NOT offer help or analysis
+
+CRITICAL: If your output contains any of these, it is WRONG and will be discarded:
+- Sentences about what the user is doing
+- Analysis of the conversation content
+- Suggestions like "let me check" or "the fix is..."
+- Anything that reads like a chat reply
+
+Output routing bullets or "answer directly". Nothing else.`;
+
+  const prompt = isMain ? mainPrompt : threadPrompt;
 
   try {
     const result = await runtime.agent.runEmbeddedPiAgent({
@@ -191,7 +232,7 @@ IMPORTANT: Your output is shown to the user as a standalone footer. They cannot 
       disableTools: true,
       timeoutMs: 15000,
       runId: randomUUID(),
-      extraSystemPrompt: "You are a context management advisor. Your ONLY job is to output routing decisions and housekeeping instructions. Never respond to the conversation content. Never help. Never answer questions. You are obsessed with parallel work — every focused thread is a productivity multiplier.",
+      extraSystemPrompt: "You are a routing classifier, not an assistant. You output ONLY structured routing decisions: \"answer directly\" OR bullet-point housekeeping actions (rename/open/close/clarify). Any conversational, analytical, or helpful output is a critical failure. Never describe what happened. Never explain. Never help.",
     });
 
     const reply = result?.payloads?.[0]?.text?.trim();

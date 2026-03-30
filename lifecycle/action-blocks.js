@@ -104,13 +104,12 @@ const generating = new Set();
 
 const THREAD_PROMPT = `Predict what the user will say next in this focused work thread. Output ONLY a JSON array of 2-4 objects (vary the count naturally), each with:
 - "emoji": a relevant emoji
-- "title": the noun/topic (max 30 chars) — what it's about
-- "description": brief context (max 60 chars) — explains what it is
-- "action": the verb (max 20 chars) — what to do, a short imperative
+- "description": what the user would say or want done (30-100 chars, one clear sentence)
+- "action": short verb label for the button (max 20 chars)
 
-Title and action must be DIFFERENT text. Title = noun phrase, action = verb phrase.
+Be specific to the conversation context — not generic. Mix forward actions and clarifying questions.
 
-Example: [{"emoji":"🚀","title":"Production deploy","description":"Push auth service changes to production","action":"Deploy now"},{"emoji":"🤔","title":"Error handling","description":"What happens when the API returns a 500?","action":"Investigate"},{"emoji":"🧪","title":"Test suite","description":"Run tests and show current coverage","action":"Run tests"}]`;
+Example: [{"emoji":"🚀","description":"Push the auth service changes to production and verify health checks","action":"Deploy now"},{"emoji":"🤔","description":"What happens when the API returns a 500?","action":"Investigate"},{"emoji":"🧪","description":"Run the full test suite and show coverage numbers","action":"Run tests"}]`;
 
 const MAIN_PROMPT = `You are predicting what the user might want to do next in their main command channel. This is NOT a focused work thread — it's their home base for orchestrating across mindsets (infra, dev, pa, wordware).
 
@@ -122,13 +121,10 @@ Suggest a mix of:
 
 Output ONLY a JSON array of 2-4 objects (vary the count naturally), each with:
 - "emoji": a relevant emoji
-- "title": the noun/topic (max 30 chars) — what it's about
-- "description": brief context (max 60 chars) — explains what it is
-- "action": the verb (max 20 chars) — what to do, a short imperative
+- "description": what the user would say or want done (30-100 chars, one clear sentence)
+- "action": short verb label for the button (max 20 chars)
 
-Title and action must be DIFFERENT text. Title = noun phrase, action = verb phrase.
-
-Example: [{"emoji":"📋","title":"Board status","description":"Check all active threads across mindsets","action":"Show board"},{"emoji":"📬","title":"Inbox","description":"Scan for unread emails needing attention","action":"Check email"}]`;
+Example: [{"emoji":"📋","description":"Check all active threads across mindsets and see what's stale","action":"Show board"},{"emoji":"📬","description":"Scan for unread emails that need attention today","action":"Check email"}]`;
 
 // ─── Setup ───────────────────────────────────────────────────────────
 
@@ -254,17 +250,16 @@ async function onAgentEnd(event, ctx, runtime, logger) {
       const action = opt.action || opt.label || "Go";
       // Separator between options (not before first)
       if (i > 0) blocks.push({ type: "separator" });
-      // Title without emoji — emoji lives in the button only
-      blocks.push({ type: "text", text: `**${title}**\n${description}` });
-      // callbackData carries emoji + title for webhook posting
-      const callbackText = `${emoji} ${title}`.trim();
+      // Description only — no title
+      blocks.push({ type: "text", text: description });
+      // callbackData carries the description for webhook posting
       blocks.push({
         type: "actions",
         buttons: [{
           label: action.slice(0, 30),
           style: "secondary",
           ...(emoji ? { emoji: { name: emoji } } : {}),
-          callbackData: `${NAMESPACE}:${callbackText.slice(0, 49)}`,
+          callbackData: `${NAMESPACE}:${description.slice(0, 49)}`,
         }],
       });
     }
@@ -365,7 +360,7 @@ async function predict(ctx, runtime, logger, isMain = false) {
       timeoutMs: 12_000,
       runId: randomUUID(),
       extraSystemPrompt:
-        'Output ONLY a JSON array of 2-4 objects with "emoji", "title" (noun), "description", and "action" (verb) keys. Title and action must differ. No markdown fences, no explanation, no preamble.',
+        'Output ONLY a JSON array of 2-4 objects with "emoji", "description" (30-100 chars, one sentence), and "action" (short verb, max 20 chars) keys. No markdown fences, no explanation, no preamble.',
     });
 
     const text = result?.payloads?.[0]?.text?.trim();
@@ -391,14 +386,14 @@ async function predict(ctx, runtime, logger, isMain = false) {
           return {
             emoji: emojiMatch?.[1] || "",
             title: text.slice(0, 30),
-            description: text.slice(0, 60),
+            description: text.slice(0, 100),
             action: "Go",
           };
         }
         return {
           emoji: (item.emoji || "").slice(0, 2),
           title: (item.title || item.label || "Option").slice(0, 30),
-          description: (item.description || item.title || item.label || "").slice(0, 60),
+          description: (item.description || item.title || item.label || "").slice(0, 100),
           action: (item.action || item.label || "Go").slice(0, 20),
         };
       })
