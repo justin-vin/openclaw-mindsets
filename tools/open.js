@@ -60,8 +60,13 @@ export default function openTool(api) {
 
       try {
         const fullBootstrap = buildBootstrap({ prompt, context, done, refs });
-        const bootstrap = fullBootstrap.length > 2000 ? fullBootstrap.substring(0, 1997) + "..." : fullBootstrap;
-        const thread = await discord.createThread(m.forumId, title, bootstrap, logger);
+        const bootstrap = fullBootstrap.length > 4096 ? fullBootstrap.substring(0, 4093) + "..." : fullBootstrap;
+        const bootstrapEmbed = {
+          author: { name: "🎯 Thread Opened" },
+          description: bootstrap,
+          color: 0x57F287,
+        };
+        const thread = await discord.createThread(m.forumId, title, null, logger, { embeds: [bootstrapEmbed] });
 
         // Auto-subscribe configured users (e.g. Dom) so they see new threads
         const subscribeIds = getAutoSubscribeIds();
@@ -81,9 +86,10 @@ export default function openTool(api) {
             await discord.webhookPost(
               m.webhookUrl,
               thread.id,
-              `<@${botId}> ${bootstrap}`,
+              null,
               "Justin",
-              null
+              null,
+              { embeds: [{ description: "Thread ready.", color: 0x57F287 }] }
             );
           } catch (e) {
             return { content: [{ type: "text", text: JSON.stringify({

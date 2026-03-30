@@ -2,17 +2,17 @@
  * lifecycle/turn.js — Per-turn message analysis + main identity.
  *
  * getMainIdentity(ctx) → static main grounding (prependSystemContext)
- * analyze(event, ctx, api) → routing advice (prependContext)
+ * analyze(event, ctx, api) → per-turn advice (prependContext)
  *
- * Analysis: fork session JSONL → runEmbeddedPiAgent → get advice → post visible block.
+ * Analysis: build ephemeral JSONL from event.messages → runEmbeddedPiAgent → get advice.
+ * No visible Discord posts. No session file disk reads. All data comes from the hook event.
  */
 
 import { randomUUID } from "node:crypto";
-import { cpSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { isMainSession, listMindsets } from "../lib/config.js";
-import * as discord from "../lib/discord.js";
 
 const MAIN_IDENTITY = `
 # You are main
@@ -62,22 +62,30 @@ export async function analyze(event, ctx, api) {
 
   const runtime = api.runtime;
   const logger = api.logger;
+
+  // Build ephemeral JSONL from event.messages (includes current user message)
+  const messages = event?.messages;
   
+  // Diagnostic: log what the hook actually receives
+  const msgCount = messages?.length ?? 0;
+  const roles = messages?.map(m => m.role) ?? [];
+  const userMsgs = messages?.filter(m => m.role === "user") ?? [];
+  const lastUserPreview = userMsgs.length > 0 
+    ? (typeof userMsgs[userMsgs.length - 1].content === "string" 
+        ? userMsgs[userMsgs.length - 1].content.slice(0, 80) 
+        : "[complex content]")
+    : "[none]";
+  logger.info(`turn: event.messages count=${msgCount} roles=[${roles.join(",")}] userMsgs=${userMsgs.length} lastUser="${lastUserPreview}" prompt="${(event?.prompt || "").slice(0, 80)}"`);
+  
+  if (!messages || !messages.length) return null;
+
+  const forkFile = join(tmpdir(), `mindsets-fork-${Date.now()}-${randomUUID().slice(0, 8)}.jsonl`);
 
   try {
-    const sessionFile = findSessionFile(ctx);
-    const forkFile = join(tmpdir(), `mindsets-fork-${Date.now()}.jsonl`);
-
-    if (sessionFile) {
-      cpSync(sessionFile, forkFile);
-    } else {
-      // No session file yet (fresh session). Create minimal JSONL with user's last message.
-      const userMsg = event?.messages?.filter(m => m.role === "user")?.pop();
-      const text = typeof userMsg?.content === "string" ? userMsg.content :
-        Array.isArray(userMsg?.content) ? userMsg.content.map(c => c.text || "").join(" ") : "";
-      if (!text) return null;
-      writeFileSync(forkFile, JSON.stringify({ type: "message", message: { role: "user", content: text } }) + "\n");
-    }
+    const lines = messages
+      .map(m => JSON.stringify({ type: "message", message: m }))
+      .join("\n") + "\n";
+    writeFileSync(forkFile, lines);
 
     const mindsets = listMindsets();
     const isMain = isMainSession(ctx);
@@ -97,38 +105,38 @@ Reply with a brief recommendation: "answer directly", "open <mindset> '<title>'"
       extraSystemPrompt: "You are a routing advisor. Reply briefly. No markdown.",
     });
 
-    try { rmSync(forkFile); } catch {}
-
-    const reply = result?.payloads?.[0]?.text;
+    const reply = result?.payloads?.[0]?.text?.trim();
     if (!reply) return null;
 
-    // Post visible analysis in Discord
-    const threadId = ctx.sessionKey?.match(/discord:channel:(\d+)/)?.[1];
-    if (threadId) {
-      try { await discord.sendEmbed(threadId, {
-        author: { name: "📋 Routing" },
-        description: reply,
-        color: 0x99AAB5,
-      }, logger); } catch {}
+    // Validate output — discard if Pi echoed its own instructions back
+    if (looksLikePromptEcho(reply)) {
+      logger.warn("turn: analysis returned prompt echo, discarding");
+      return null;
     }
 
     return `Routing advice: ${reply}`;
   } catch (e) {
     logger.warn("turn: analysis failed", { error: e.message });
     return null;
+  } finally {
+    try { rmSync(forkFile); } catch {}
   }
 }
 
-function findSessionFile(ctx) {
-  if (!ctx.sessionKey) return null;
-  const home = process.env.OPENCLAW_HOME || `${process.env.HOME}/.openclaw`;
-  try {
-    for (const agent of readdirSync(join(home, "agents"))) {
-      const store = join(home, "agents", agent, "sessions", "sessions.json");
-      if (!existsSync(store)) continue;
-      const entry = JSON.parse(readFileSync(store, "utf-8"))[ctx.sessionKey];
-      if (entry?.sessionFile && existsSync(entry.sessionFile)) return entry.sessionFile;
-    }
-  } catch {}
-  return null;
+/**
+ * Detect if the Pi agent echoed its own prompt/instructions back.
+ * Common when the model has no real user content to analyze.
+ */
+function looksLikePromptEcho(text) {
+  const lower = text.toLowerCase();
+  const echoSignals = [
+    "analyze the user's last message",
+    "reply with a brief recommendation",
+    "you are a routing advisor",
+    "available mindsets:",
+    "current context:",
+    "one or two lines max",
+  ];
+  const matches = echoSignals.filter(s => lower.includes(s));
+  return matches.length >= 2;
 }
