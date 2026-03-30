@@ -63,6 +63,7 @@ Use this to understand what mindsets have been working on, check recent context 
 - Implement anything
 - Track thread progress (they're autonomous)
 - Let open loops accumulate without dispatching
+- Steer a thread that's mid-task with unrelated work. New problem = new thread. Steer only to course-correct the same task.
 `.trim();
 
 export function getMainIdentity(ctx) {
@@ -178,7 +179,8 @@ Reply with ONE of:
 1. "answer directly" — this message belongs here and splitting would not help.
 2. Housekeeping instructions for the agent. Max 3 bullet points. Can include: renaming this thread, opening new threads, suggesting closing this thread, or asking the user to clarify something. Keep suggested titles to 2-4 words.
 
-Output ONLY the routing decision. No conversation. No greeting. No markdown headers. No emoji prefixes.`;
+Output ONLY the routing decision. No conversation. No greeting. No markdown headers. No emoji. Keep each bullet ≤15 words. Be terse.
+IMPORTANT: Your output is shown to the user as a standalone footer. They cannot see the conversation context. Each bullet must be fully self-contained — include thread names, what happened, and why. Never say "this thread" — use the actual thread name.`;
 
   try {
     const result = await runtime.agent.runEmbeddedPiAgent({
@@ -204,15 +206,20 @@ Output ONLY the routing decision. No conversation. No greeting. No markdown head
 
     if (reply.toLowerCase() === "answer directly") return null;
 
-    // Post routing block visibly as a bot embed (not webhook).
+    // Post routing block visibly as a ghost embed (footer-only, no color, no emoji).
     // Bot's own messages are natively ignored by OpenClaw — no feedback loop.
     if (channelId) {
       logger.info(`turn: posting routing embed to channel=${channelId}`);
       try {
+        // Compact: strip bullet prefixes, join with " · ", prepend header
+        const items = reply
+          .split("\n")
+          .map(l => l.replace(/^[-*]\s*/, "").replace(/\*\*/g, "").trim())
+          .filter(Boolean)
+          .join(" · ");
+        const footerText = `⚠️ Housekeeping recommendations: ${items}`;
         await sendEmbed(channelId, {
-          author: { name: "📋 Routing Analysis" },
-          description: reply,
-          color: 0x5865F2,
+          footer: { text: footerText },
         }, logger);
         logger.info(`turn: routing embed posted successfully`);
       } catch (e) {
