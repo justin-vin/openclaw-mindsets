@@ -37,7 +37,9 @@ export default function updateTool(api) {
         for (const m of mindsets) {
           if (!m.webhookUrl) continue;
           try {
-            await discord.webhookPost(m.webhookUrl, target, `<@${botId}> ${steer}`, "Justin", null);
+            await discord.webhookPost(m.webhookUrl, target, null, "Justin", null, {
+              embeds: [{ description: steer, color: 0x5865F2, author: { name: "🔀 Steer" } }]
+            });
             steered = true;
             break;
           } catch { /* wrong forum's webhook — try next */ }
