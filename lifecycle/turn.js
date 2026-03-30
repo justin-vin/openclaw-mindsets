@@ -67,9 +67,10 @@ export async function analyze(event, ctx, api) {
   // Guard: skip recursive calls from the analysis fork itself
   if (ctx.sessionId?.startsWith("mindsets-analysis-")) return null;
 
-  // Guard: skip if the inbound is a routing block we posted (prevents loop)
+  // Guard: skip if the inbound is from the dispatch webhook (routing blocks, steers)
+  // Webhook messages have a specific author ID that differs from the bot
   const promptText = event?.prompt || "";
-  if (promptText.includes("📋") && /📋\s*(answer directly|open |rename |split into)/.test(promptText)) return null;
+  if (ctx.trigger === "webhook" || promptText.includes("📋")) return null;
 
   // Resolve the current session file by reading the store directly
   let entry;
@@ -104,18 +105,34 @@ export async function analyze(event, ctx, api) {
   const mindsets = listMindsets();
   const isMain = isMainSession(ctx);
 
-  const prompt = `ROUTING ANALYSIS ONLY. Do not respond to the conversation. Do not help. Do not answer questions.
+  // Get active threads for routing context
+  let activeThreadsContext = "";
+  try {
+    const { getActiveThreads, formatThreadsForPrompt } = await import("../lib/threads.js");
+    const threads = await getActiveThreads(ctx.agentId, logger);
+    const formatted = formatThreadsForPrompt(threads);
+    if (formatted) activeThreadsContext = `\nActive threads:\n${formatted}\n`;
+  } catch {}
+
+  const prompt = `ROUTING ANALYSIS. Do not respond to the conversation. Do not help. Do not answer questions.
+
+You are obsessed with parallelism. The user's productivity depends on conversations being focused and concurrent. Your job is to manage context windows so the user can do as much in parallel as possible.
 
 Context: ${isMain ? "main channel" : `thread in #${ctx.agentId}`}.
 Mindsets: ${mindsets.map(m => m.name).join(", ")}.
+${activeThreadsContext}
+Rules:
+- Keep 0-5 active threads per mindset. If over 5, suggest closing stale ones.
+- If the original thread objective (the opening bootstrap) has been completed, suggest closing this thread and opening a new one for the new topic.
+- "answer directly" means this message truly belongs in this conversation AND would NOT benefit from being split into its own focused thread. Be strict.
+- If the conversation has drifted from its original topic, suggest a rename, a new thread, or both.
+- Multiple actions are allowed and encouraged (rename + open + close in one response).
 
-Based on the user's last message, reply with EXACTLY ONE of:
-- "answer directly" (message is in scope for current context)
-- "open <mindset> '<title>'" (needs a new thread)
-- "rename '<new title>'" (thread title should change)
-- "split into '<title1>' and '<title2>'" (conversation diverged)
+Reply with ONE of:
+1. "answer directly" — this message belongs here and splitting would not help.
+2. Housekeeping instructions for the agent. Max 3 bullet points. Can include: renaming this thread, opening new threads, suggesting closing this thread, or asking the user to clarify something. Be specific and brief.
 
-One line only. No explanation. No markdown. No conversation.`;
+Output ONLY the routing decision. No conversation. No greeting. No markdown headers. No emoji prefixes.`;
 
   try {
     const result = await runtime.agent.runEmbeddedPiAgent({
@@ -126,7 +143,7 @@ One line only. No explanation. No markdown. No conversation.`;
       disableTools: true,
       timeoutMs: 15000,
       runId: randomUUID(),
-      extraSystemPrompt: "You are a silent routing classifier. Your ONLY job is to output a routing decision. Never respond to the conversation content. Never help. Never answer questions. Output exactly one routing decision line.",
+      extraSystemPrompt: "You are a context management advisor. Your ONLY job is to output routing decisions and housekeeping instructions. Never respond to the conversation content. Never help. Never answer questions. You are obsessed with parallel work — every focused thread is a productivity multiplier.",
     });
 
     const reply = result?.payloads?.[0]?.text?.trim();
@@ -142,8 +159,21 @@ One line only. No explanation. No markdown. No conversation.`;
     // Post visibly in Discord
     const threadId = ctx.sessionKey?.match(/discord:channel:(\d+)/)?.[1];
     if (threadId) {
-      const webhooks = listMindsets();
-      await sendToThread(`📋 ${reply}`, threadId, webhooks, { header: null, color: 0x2B2D31 }).catch(() => {});
+      if (reply.toLowerCase() === "answer directly") {
+        // React to the user's message instead of posting a block
+        try {
+          const { api: discordApi } = await import("../lib/discord.js");
+          // Get the latest message in the thread (the user's message)
+          const messages = await discordApi("GET", `/channels/${threadId}/messages?limit=1`, null, logger);
+          if (messages?.[0]?.id) {
+            await discordApi("PUT", `/channels/${threadId}/messages/${messages[0].id}/reactions/📋/@me`, null, logger);
+          }
+        } catch {}
+      } else {
+        // Post housekeeping block
+        const webhooks = listMindsets();
+        await sendToThread(reply, threadId, webhooks, { header: null, color: 0x2B2D31 }).catch(() => {});
+      }
     }
 
     return `Routing advice: ${reply}`;

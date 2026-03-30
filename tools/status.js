@@ -3,7 +3,7 @@
  */
 
 import * as discord from "../lib/discord.js";
-import { listMindsets, getGuildId } from "../lib/config.js";
+import { getActiveThreads } from "../lib/threads.js";
 
 export default function statusTool(api) {
   return {
@@ -17,7 +17,6 @@ export default function statusTool(api) {
     },
     async execute(_id, { threadId } = {}, ctx) {
       const logger = api.logger;
-      
 
       if (threadId) {
         try {
@@ -31,22 +30,8 @@ export default function statusTool(api) {
       }
 
       try {
-        const mindsetList = listMindsets();
-        const forumIds = new Set(mindsetList.map(m => m.forumId));
-        const { threads } = await discord.listActiveThreads(getGuildId(), logger);
-
-        const grouped = {};
-        for (const t of (threads || []).filter(t => forumIds.has(t.parent_id))) {
-          const name = mindsetList.find(m => m.forumId === t.parent_id)?.name || "unknown";
-          if (!grouped[name]) grouped[name] = [];
-          grouped[name].push({ id: t.id, title: t.name });
-        }
-
-        const ordered = {};
-        if (ctx?.agentId && grouped[ctx.agentId]) ordered[ctx.agentId] = grouped[ctx.agentId];
-        for (const [k, v] of Object.entries(grouped)) if (k !== ctx?.agentId) ordered[k] = v;
-
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, threads: ordered }) }] };
+        const threads = await getActiveThreads(ctx?.agentId, logger);
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, threads }) }] };
       } catch (e) {
         return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
       }

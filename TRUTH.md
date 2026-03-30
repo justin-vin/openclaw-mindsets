@@ -97,7 +97,7 @@ Create a new thread. Structured bootstrap — the tool concatenates fields into 
 - `done` (optional) — acceptance criteria, what "done" looks like
 - `refs` (optional) — file paths, URLs, thread links to reference
 
-The tool formats these into sections (Task, Context, Done when, References) and posts as the bootstrap message. This enforces completeness — agents can't skip sections.
+The tool formats these into a compact bootstrap: prompt first (no label — the task IS the message), then inline `**Background:**`, `**Target:**`, and `**Refs:**` sections. Only provided fields are included. This keeps bootstraps conversational rather than form-like.
 
 Auto-subscribes configured users (Dom) to every new thread.
 
@@ -138,11 +138,12 @@ This is the thread's entire universe. It defines who the agent is in a thread, h
 
 Contains:
 - Thread identity and autonomy rules
+- **Plan-first workflow** — read → plan → wait for approval → execute. Never jump straight to implementation. User sees the approach and agrees before anything changes.
 - Scope management
 - Identity bridge (one agent, multiple modes)
 - Collaboration model (files, not messages)
 - Closing behavior
-- Dynamic context: which mindset, thread metadata
+- Dynamic context: which mindset, thread metadata (injected dynamically from session key)
 
 Whether tool descriptions should differ for thread vs main contexts is an open question — tools might be used slightly differently in each context.
 
@@ -193,7 +194,7 @@ For opening new threads. Single webhook POST with `thread_name` creates the foru
 await discord.webhookPost(webhookUrl, null, null, "Justin", null, {
   thread_name: title,
   wait: true,
-  embeds: [{ author: { name: "🎯 Thread Opened" }, description: bootstrap, color: 0x57F287 }],
+  embeds: [{ author: { name: "Thread Opened" }, description: bootstrap, color: 0x57F287 }],
 });
 ```
 
@@ -261,7 +262,7 @@ const wh = await discord.createWebhook(forumId, { name: 'Justin Dispatch' });
 const result = await discord.webhookPost(webhookUrl, null, null, "Justin", null, {
   thread_name: title,
   wait: true,  // returns thread ID
-  embeds: [{ author: { name: "🎯 Thread Opened" }, description: bootstrap, color: 0x57F287 }],
+  embeds: [{ author: { name: "Thread Opened" }, description: bootstrap, color: 0x57F287 }],
 });
 const threadId = result.channel_id;
 ```

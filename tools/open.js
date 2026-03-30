@@ -9,11 +9,12 @@ import { createThreadViaWebhook, addThreadMember } from "../lib/discord.js";
 import { resolveMindset, getAutoSubscribeIds } from "../lib/config.js";
 
 function buildBootstrap({ prompt, context, done, refs }) {
-  const sections = [`**Task**\n${prompt}`];
-  if (context) sections.push(`**Context**\n${context}`);
-  if (done) sections.push(`**Done when**\n${done}`);
-  if (refs) sections.push(`**References**\n${refs}`);
-  return sections.join("\n\n");
+  // Prompt first, no label — the task IS the message.
+  const lines = [prompt];
+  if (context) lines.push('', `**Background:** ${context}`);
+  if (done) lines.push('', `**Target:** ${done}`);
+  if (refs) lines.push('', `**Refs:** ${refs}`);
+  return lines.join('\n');
 }
 
 export default function openTool(api) {
