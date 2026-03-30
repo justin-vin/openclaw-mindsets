@@ -19,9 +19,6 @@ import { sendToThread, sendEmbed } from "../lib/discord.js";
 const _analysisCooldowns = new Map();
 const COOLDOWN_MS = 10_000; // 10s minimum between analyses per thread
 
-// Last routing advice per channel (consumed by action-blocks for button suggestions)
-export const lastRoutingAdvice = new Map();
-
 const MAIN_IDENTITY = `
 # You are main
 
@@ -251,7 +248,6 @@ Output routing bullets or "answer directly". Nothing else.`;
     }
 
     if (reply.toLowerCase() === "answer directly") {
-      if (channelId) lastRoutingAdvice.delete(channelId);
       // Post green "on track" embed for visibility
       if (channelId) {
         const onTrackText = isMain ? "✅ Workspace organized" : "✅ Thread on track";
@@ -287,9 +283,6 @@ Output routing bullets or "answer directly". Nothing else.`;
     } else {
       logger.warn(`turn: no channelId resolved, cannot post routing embed`);
     }
-
-    // Store for action-blocks to consume
-    if (channelId) lastRoutingAdvice.set(channelId, reply);
 
     return { appendSystemContext: `## Routing Advice (internal — do not echo this to the user)\n${reply}` };
   } catch (e) {
