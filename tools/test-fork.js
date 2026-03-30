@@ -15,20 +15,21 @@ export default function testForkTool(api) {
       type: "object",
       properties: {
         question: { type: "string", description: "Question to ask the forked session." },
+        sessionKey: { type: "string", description: "Session key to fork from. Omit for current." },
       },
       required: ["question"],
     },
-    async execute(_id, { question }, ctx) {
+    async execute(_id, { question, sessionKey: overrideKey }, ctx) {
       const runtime = api.runtime;
       const logger = api.logger;
 
-      // Resolve current session file
+      // Resolve session file
+      const targetKey = overrideKey || ctx.sessionKey;
       const agentId = ctx.agentId || "infra";
       const store = runtime.agent.session.loadSessionStore();
-      const sessionKey = ctx.sessionKey;
-      const entry = store[sessionKey];
+      const entry = store[targetKey];
       if (!entry?.sessionFile) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "No session file found for " + sessionKey }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "No session file found for " + targetKey, keys: Object.keys(store).filter(k => k.includes("1488025")).slice(0, 5) }) }] };
       }
 
       // Branch using SessionManager
