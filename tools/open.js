@@ -2,19 +2,18 @@
  * open — Create a new thread in a mindset's forum.
  *
  * Structured bootstrap: accepts separate fields (prompt, context, done, refs)
- * and concatenates them into a formatted bootstrap message. This enforces
- * completeness — agents can't skip sections.
+ * and concatenates them into a formatted bootstrap message.
  *
  * Flow:
  * 1. Resolve mindset → forum channel ID + webhook
  * 2. Build formatted bootstrap from structured fields
- * 3. Create Discord forum thread with bootstrap as first message
+ * 3. Webhook creates forum thread + posts bootstrap (one call)
+ *    - Dispatch identity → passes self-filter → agent wakes with content
  * 4. Auto-subscribe configured users (Dom)
- * 5. Wake via webhook steer
  */
 
 import * as discord from "../lib/discord.js";
-import { resolveMindset, getBotId, getAutoSubscribeIds } from "../lib/config.js";
+import { resolveMindset, getAutoSubscribeIds } from "../lib/config.js";
 
 function buildBootstrap({ prompt, context, done, refs }) {
   const sections = [];
@@ -58,53 +57,51 @@ export default function openTool(api) {
       const m = resolveMindset(null, name);
       if (!m) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Unknown mindset: ${name}` }) }] };
 
+      if (!m.webhookUrl) {
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `No webhook configured for mindset: ${name}` }) }] };
+      }
+
       try {
         const fullBootstrap = buildBootstrap({ prompt, context, done, refs });
-        const bootstrap = fullBootstrap.length > 4096 ? fullBootstrap.substring(0, 4093) + "..." : fullBootstrap;
-        const bootstrapEmbed = {
-          author: { name: "🎯 Thread Opened" },
-          description: bootstrap,
-          color: 0x57F287,
-        };
-        const thread = await discord.createThread(m.forumId, title, null, logger, { embeds: [bootstrapEmbed] });
+        const bootstrap = fullBootstrap.length > 2000 ? fullBootstrap.substring(0, 1997) + "..." : fullBootstrap;
+
+        // Single webhook call: creates forum thread + posts bootstrap from dispatch identity.
+        // Dispatch identity passes self-filter → OpenClaw processes as inbound → agent wakes.
+        // Embed-only: visually clean for humans, agent reads embed content via OpenClaw extraction
+        const result = await discord.webhookPost(
+          m.webhookUrl,
+          null,  // no thread_id — we're creating one
+          null,  // no plain text — embed carries the content
+          "Justin",
+          null,
+          {
+            thread_name: title,
+            wait: true,  // need response to get thread ID
+            embeds: [{
+              author: { name: "🎯 Thread Opened" },
+              description: bootstrap,
+              color: 0x57F287,
+            }],
+          }
+        );
+
+        // The response includes channel_id which is the new thread ID
+        const threadId = result.channel_id;
+        if (!threadId) {
+          return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Thread created but no thread ID returned" }) }] };
+        }
 
         // Auto-subscribe configured users (e.g. Dom) so they see new threads
         const subscribeIds = getAutoSubscribeIds();
         for (const uid of subscribeIds) {
           try {
-            await discord.addThreadMember(thread.id, uid, logger);
+            await discord.addThreadMember(threadId, uid, logger);
           } catch (e) {
-            logger.warn(`mindsets: failed to subscribe ${uid} to thread ${thread.id}: ${e.message}`);
+            logger.warn(`mindsets: failed to subscribe ${uid} to thread ${threadId}: ${e.message}`);
           }
         }
 
-        // Wake via webhook steer — this creates Discord inbound which
-        // establishes the session with correct delivery context
-        const botId = getBotId();
-        if (m.webhookUrl && botId) {
-          try {
-            await discord.webhookPost(
-              m.webhookUrl,
-              thread.id,
-              null,
-              "Justin",
-              null,
-              { embeds: [{ description: "Thread ready.", color: 0x57F287 }] }
-            );
-          } catch (e) {
-            return { content: [{ type: "text", text: JSON.stringify({
-              ok: true, threadId: thread.id, link: `<#${thread.id}>`,
-              warning: `Thread created but wake failed: ${e.message}`
-            }) }] };
-          }
-        } else {
-          return { content: [{ type: "text", text: JSON.stringify({
-            ok: true, threadId: thread.id, link: `<#${thread.id}>`,
-            warning: "Thread created but no webhook configured — agent won't wake"
-          }) }] };
-        }
-
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, threadId: thread.id, link: `<#${thread.id}>` }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, threadId, link: `<#${threadId}>` }) }] };
       } catch (e) {
         return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
       }

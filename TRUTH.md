@@ -185,19 +185,21 @@ On failure: fall back to no advice rather than blocking the turn.
 
 Two primitives. Nothing else works — see "Why everything else failed" below.
 
-### Primitive 1: Cold Wake (`openclaw agent` CLI)
+### Primitive 1: Webhook Thread Creation
 
-For the first message to a new thread where no session exists.
+For opening new threads. Single webhook POST with `thread_name` creates the forum thread and posts the bootstrap as the opening message — all from the dispatch identity.
 
-```bash
-openclaw agent --agent <mindset> \
-  --message "<bootstrap>" \
-  --deliver --reply-channel discord \
-  --reply-to "channel:<threadId>" \
-  --timeout 300
+```js
+await discord.webhookPost(webhookUrl, null, null, "Justin", null, {
+  thread_name: title,
+  wait: true,
+  embeds: [{ author: { name: "🎯 Thread Opened" }, description: bootstrap, color: 0x57F287 }],
+});
 ```
 
-The CLI bypasses the gateway's session delivery system entirely — `--deliver --reply-to` makes the CLI itself call Discord's API. Fire-and-forget via detached spawn.
+Dispatch identity passes self-filter → OpenClaw processes as inbound → session established → agent wakes with full bootstrap in context. OpenClaw extracts embed content. No bot mention needed. No CLI cold wake.
+
+**Known Discord quirk (#6839):** Sometimes the webhook message isn't the "original post" — shows as "Original message was deleted." Content still arrives and agent still wakes. Cosmetic only.
 
 ### Primitive 2: Steer (Discord Webhook)
 
@@ -250,16 +252,18 @@ const wh = await discord.createWebhook(forumId, { name: 'Justin Dispatch' });
 
 ### The three operations
 
-**1. Open** — Create thread via Discord API → post bootstrap → cold wake via CLI spawn → done.
+**1. Open** — Single webhook POST creates forum thread + posts bootstrap. Done.
 
 ```js
-const thread = await discord.createThread(forumId, title);
-await discord.sendMessage(thread.id, bootstrap);
-spawn(which.sync('openclaw'), [
-  'agent', '--agent', mindsetId, '--message', bootstrap,
-  '--deliver', '--reply-channel', 'discord',
-  '--reply-to', `channel:${thread.id}`, '--timeout', '300'
-], { detached: true, stdio: 'ignore' });
+// One call: webhook creates thread, posts bootstrap as embed from dispatch identity.
+// Dispatch identity passes self-filter → OpenClaw processes as inbound → agent wakes.
+// Agent reads embed content via OpenClaw extraction. No bot mention needed.
+const result = await discord.webhookPost(webhookUrl, null, null, "Justin", null, {
+  thread_name: title,
+  wait: true,  // returns thread ID
+  embeds: [{ author: { name: "🎯 Thread Opened" }, description: bootstrap, color: 0x57F287 }],
+});
+const threadId = result.channel_id;
 ```
 
 **2. Steer** — Webhook POST to existing thread.
@@ -307,10 +311,8 @@ The `debug` tool should detect entries in `delivery-queue/` with `lastError: "Ou
 
 ### Rules
 
-1. Cold wake = CLI spawn. Steer = webhook POST. No mixing.
+1. Thread creation = webhook POST with `thread_name`. Steer = webhook POST with `thread_id`. Both are webhooks.
 2. One webhook per forum channel. Store ID + token.
-3. `which openclaw` for CLI binary path. Never hardcode.
-4. CLI spawns are detached with `stdio: 'ignore'`.
 5. Files are the only shared state between threads.
 6. Main pulls via `status`. Never injects into thread sessions.
 7. Threads don't push to main. The user bridges contexts.

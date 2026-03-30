@@ -63,36 +63,71 @@ export async function analyze(event, ctx, api) {
   const runtime = api.runtime;
   const logger = api.logger;
 
-  // Build ephemeral JSONL from event.messages (includes current user message)
-  const messages = event?.messages;
+  // Guard: skip if this is the Pi analysis agent's own embedded run (recursive hook call).
+  // The analysis session uses a distinctive sessionId prefix.
+  if (ctx.sessionId?.startsWith("mindsets-analysis-")) return null;
+
+  // Extract ONLY the current user message for routing classification.
+  // Full conversation context causes Opus to engage with the content instead of classifying.
+  const currentPrompt = event?.prompt;
+  if (!currentPrompt) return null;
   
-  // Diagnostic: log what the hook actually receives
-  const msgCount = messages?.length ?? 0;
-  const roles = messages?.map(m => m.role) ?? [];
-  const userMsgs = messages?.filter(m => m.role === "user") ?? [];
-  const lastUserPreview = userMsgs.length > 0 
-    ? (typeof userMsgs[userMsgs.length - 1].content === "string" 
-        ? userMsgs[userMsgs.length - 1].content.slice(0, 80) 
-        : "[complex content]")
-    : "[none]";
-  logger.info(`turn: event.messages count=${msgCount} roles=[${roles.join(",")}] userMsgs=${userMsgs.length} lastUser="${lastUserPreview}" prompt="${(event?.prompt || "").slice(0, 80)}"`);
+  // Extract plain text from the prompt (strip metadata/envelope if present)
+  const userText = extractUserText(currentPrompt);
+  if (!userText || userText.length < 5) return null;
   
-  if (!messages || !messages.length) return null;
+  // Build minimal JSONL with just this one user message
+  const recentMessages = [{ role: "user", content: userText }];
+  
+  logger.debug(`turn: classifying message (${userText.length} chars): "${userText.slice(0, 60)}"`);
 
   const forkFile = join(tmpdir(), `mindsets-fork-${Date.now()}-${randomUUID().slice(0, 8)}.jsonl`);
 
   try {
-    const lines = messages
-      .map(m => JSON.stringify({ type: "message", message: m }))
-      .join("\n") + "\n";
-    writeFileSync(forkFile, lines);
+    // Build proper session JSONL with header + message entries
+    const now = new Date().toISOString();
+    const sessionHeader = JSON.stringify({
+      type: "session",
+      version: 3,
+      id: randomUUID(),
+      timestamp: now,
+      cwd: "/"
+    });
+
+    let parentId = null;
+    const msgLines = recentMessages.map(m => {
+      const id = randomUUID().slice(0, 8);
+      const entry = JSON.stringify({
+        type: "message",
+        id,
+        parentId,
+        timestamp: now,
+        message: m
+      });
+      parentId = id;
+      return entry;
+    });
+
+    const jsonl = [sessionHeader, ...msgLines].join("\n") + "\n";
+    writeFileSync(forkFile, jsonl);
+
+    logger.debug(`turn: JSONL written entries=${msgLines.length + 1} messages=${recentMessages.length}`);
 
     const mindsets = listMindsets();
     const isMain = isMainSession(ctx);
 
-    const prompt = `Analyze the user's last message. Current context: ${isMain ? "main channel" : `thread in #${ctx.agentId}`}.
-Available mindsets: ${mindsets.map(m => m.name).join(", ")}.
-Reply with a brief recommendation: "answer directly", "open <mindset> '<title>'", "rename '<old>' → '<new>'", or "split into X and Y". One or two lines max.`;
+    const prompt = `ROUTING ANALYSIS ONLY. Do not respond to the conversation. Do not help. Do not answer questions.
+
+Context: ${isMain ? "main channel" : `thread in #${ctx.agentId}`}.
+Mindsets: ${mindsets.map(m => m.name).join(", ")}.
+
+Based on the user's last message above, reply with EXACTLY ONE of:
+- "answer directly" (message is in scope for current context)
+- "open <mindset> '<title>'" (needs a new thread)
+- "rename '<new title>'" (thread title should change)
+- "split into '<title1>' and '<title2>'" (conversation diverged)
+
+One line only. No explanation. No markdown. No conversation.`;
 
     const result = await runtime.agent.runEmbeddedPiAgent({
       sessionId: `mindsets-analysis-${Date.now()}`,
@@ -102,7 +137,7 @@ Reply with a brief recommendation: "answer directly", "open <mindset> '<title>'"
       disableTools: true,
       timeoutMs: 10000,
       runId: randomUUID(),
-      extraSystemPrompt: "You are a routing advisor. Reply briefly. No markdown.",
+      extraSystemPrompt: "You are a silent routing classifier. Your ONLY job is to output a routing decision. Never respond to the conversation content. Never help. Never answer questions. Output exactly one routing decision line.",
     });
 
     const reply = result?.payloads?.[0]?.text?.trim();
@@ -121,6 +156,45 @@ Reply with a brief recommendation: "answer directly", "open <mindset> '<title>'"
   } finally {
     try { rmSync(forkFile); } catch {}
   }
+}
+
+/**
+ * Extract the actual user message text from OpenClaw's prompt,
+ * stripping envelope metadata, conversation info blocks, etc.
+ */
+function extractUserText(prompt) {
+  if (!prompt) return null;
+  
+  // Look for the actual message content after the UNTRUSTED blocks
+  // OpenClaw wraps messages in <<<EXTERNAL_UNTRUSTED_CONTENT>>> blocks
+  const untrustedMatch = prompt.match(/UNTRUSTED Discord message body\n([\s\S]*?)<<<END_EXTERNAL_UNTRUSTED_CONTENT/);
+  if (untrustedMatch) {
+    const text = untrustedMatch[1].trim();
+    // Skip media-only messages
+    if (text === "<media:document> (1 file)") return null;
+    return text || null;
+  }
+  
+  // Look for "User text:" transcription blocks (voice messages)
+  const transcriptMatch = prompt.match(/Transcript:\n[\s\S]*?\n(\[[\d:.]+\s*-->\s*[\d:.]+\]\s*.+)/);
+  if (transcriptMatch) {
+    // Extract all transcript lines
+    const lines = prompt.match(/\[\d+:\d+\.\d+\s*-->\s*\d+:\d+\.\d+\]\s*(.+)/g);
+    if (lines) {
+      return lines.map(l => l.replace(/\[\d+:\d+\.\d+\s*-->\s*\d+:\d+\.\d+\]\s*/, "")).join(" ");
+    }
+  }
+  
+  // Fallback: if no envelope found, use the raw prompt but skip metadata blocks
+  const stripped = prompt
+    .replace(/Conversation info \(untrusted metadata\):[\s\S]*?```\n/g, "")
+    .replace(/Sender \(untrusted metadata\):[\s\S]*?```\n/g, "")
+    .replace(/<<<EXTERNAL_UNTRUSTED_CONTENT[\s\S]*?<<<END_EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>/g, "")
+    .replace(/Untrusted context[\s\S]*?<<<END_EXTERNAL_UNTRUSTED_CONTENT[^>]*>>>/g, "")
+    .replace(/Routing advice:[\s\S]*?\n\n/g, "")
+    .trim();
+  
+  return stripped || null;
 }
 
 /**
