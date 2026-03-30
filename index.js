@@ -14,6 +14,7 @@ import debugTool from "./tools/debug.js";
 import * as threadLifecycle from "./lifecycle/thread.js";
 import * as turnLifecycle from "./lifecycle/turn.js";
 import * as actionBlocks from "./lifecycle/action-blocks.js";
+import { setSessionContext } from "./lib/session-context.js";
 
 export default {
   id: "openclaw-mindsets",
@@ -30,6 +31,11 @@ export default {
     api.registerTool(mindsetsTool(api));
     api.registerTool(debugTool(api));
     api.on("before_prompt_build", async (event, ctx) => {
+      // Capture session context so tools can resolve "self" references
+      if (ctx?.agentId && ctx?.sessionKey) {
+        setSessionContext(ctx.agentId, ctx.sessionKey);
+      }
+
       const result = {};
 
       // Static grounding

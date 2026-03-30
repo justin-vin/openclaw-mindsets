@@ -4,6 +4,7 @@
 
 import * as discord from "../lib/discord.js";
 import { getAutoSubscribeIds } from "../lib/config.js";
+import { getCurrentChannelId } from "../lib/session-context.js";
 
 export default function closeTool(api) {
   return {
@@ -15,11 +16,14 @@ export default function closeTool(api) {
         threadId: { type: "string", description: 'Thread ID or "self". Omit for self.' },
       },
     },
-    async execute(_id, { threadId } = {}, ctx) {
+    async execute(_id, { threadId } = {}) {
       let target = threadId;
       if (!target || target === "self") {
-        target = ctx?.sessionKey?.match(/discord:channel:(\d+)/)?.[1];
-        if (!target) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Cannot resolve current thread" }) }] };
+        // Note: execute() does NOT receive session ctx as 3rd arg (it's AbortSignal).
+        // We read the channel ID from the shared session-context store instead,
+        // which is populated by the before_prompt_build hook each turn.
+        target = getCurrentChannelId();
+        if (!target) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Cannot resolve current thread — no session context available" }) }] };
       }
 
       try {

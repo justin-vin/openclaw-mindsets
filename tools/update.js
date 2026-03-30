@@ -4,6 +4,7 @@
 
 import { renameThread, sendToThread } from "../lib/discord.js";
 import { listMindsets } from "../lib/config.js";
+import { getCurrentChannelId } from "../lib/session-context.js";
 
 export default function updateTool(api) {
   return {
@@ -17,9 +18,10 @@ export default function updateTool(api) {
         steer: { type: "string", description: "Direction to inject into the thread." },
       },
     },
-    async execute(_id, { threadId, title, steer } = {}, ctx) {
+    async execute(_id, { threadId, title, steer } = {}) {
       const logger = api.logger;
-      const target = threadId || ctx?.sessionKey?.match(/discord:channel:(\d+)/)?.[1];
+      // Resolve "self" via shared session-context store (execute() doesn't receive ctx)
+      const target = threadId || getCurrentChannelId();
       if (!target) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "No threadId" }) }] };
 
       const results = {};

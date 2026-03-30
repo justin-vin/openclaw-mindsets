@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { api as discordApi } from "../lib/discord.js";
+import { api as discordApi, sendToThread } from "../lib/discord.js";
 import { getBotId, loadWebhooks, isMainSession } from "../lib/config.js";
 
 const NAMESPACE = "action-blocks";
@@ -89,67 +89,49 @@ export function setup(api) {
     channel: "discord",
     namespace: NAMESPACE,
     async handler(ctx) {
-      logger.info(`action-blocks: HANDLER FIRED — namespace=${ctx.interaction?.namespace} payload=${ctx.interaction?.payload} conv=${ctx.conversationId} keys=${Object.keys(ctx.interaction || {}).join(",")} ctxKeys=${Object.keys(ctx || {}).join(",")}`);
+      logger.info(`action-blocks: HANDLER FIRED — payload=${ctx.interaction?.payload} conv=${ctx.conversationId} data=${JSON.stringify(ctx.interaction?.data)?.slice(0,200)}`);
       // conversationId may be "channel:123" or just "123"
       const rawChId = ctx.conversationId?.replace(/^channel:/, "");
       const entry = blockState.get(rawChId);
 
-      // The button label IS the prediction text — get it from the interaction
-      // The label is on the interaction's source message component
-      let selected = ctx.interaction?.label || null;
+      // The payload IS the label text (encoded in callbackData as "action-blocks:<text>")
+      let selected = ctx.interaction.payload?.trim() || null;
 
-      // Fallback: try to get from blockState by index
-      if (!selected) {
-        const idxMatch = ctx.interaction.payload?.match(/i=(\d+)/);
+      // Fallback to blockState options by index (legacy compat)
+      if (!selected || selected.match(/^i=\d+$/)) {
+        const idxMatch = (selected || "").match(/i=(\d+)/);
         if (idxMatch && entry?.options) {
           selected = entry.options[parseInt(idxMatch[1])];
         }
       }
       if (!selected) {
-        selected = ctx.interaction.payload || "continue";
+        selected = "continue";
       }
 
       logger.info(`action-blocks: selected="${selected}" hasEntry=${!!entry} sessionKey=${entry?.sessionKey}`);
 
-      // Post the selected text visibly, replacing the button message
+      logger.info(`action-blocks: about to process tap`);
       try {
-        await ctx.respond.clearComponents({ text: `> ${selected}` });
+        // Delete the button message and post selected text
+        const msgId = ctx.interaction?.messageId;
+        if (msgId && rawChId) {
+          logger.info(`action-blocks: deleting msg ${msgId} in ${rawChId}`);
+          await discordApi("DELETE", `/channels/${rawChId}/messages/${msgId}`, null, logger);
+          logger.info(`action-blocks: posting quote`);
+          await discordApi("POST", `/channels/${rawChId}/messages`, { content: `> ${selected}` }, logger);
+        }
+
+        // Send via webhook to trigger agent turn
+        logger.info(`action-blocks: sending webhook`);
+        const webhooks = loadWebhooks();
+        if (webhooks?.length && rawChId) {
+          const sent = await sendToThread(selected, rawChId, webhooks, { header: "Action Block" });
+          logger.info(`action-blocks: webhook sent=${sent}`);
+        } else {
+          logger.warn(`action-blocks: no webhooks for ${rawChId}`);
+        }
       } catch (e) {
-        logger.warn(`action-blocks: clearComponents failed — ${e.message}`);
-        try { await ctx.respond.acknowledge(); } catch {}
-      }
-
-      // Inject into session — try blockState first, then build sessionKey from context
-      let sessionKey = entry?.sessionKey;
-      if (!sessionKey && rawChId) {
-        // Reconstruct sessionKey from the agentId binding for this channel
-        // The component system passes sessionKey via the spec — check if available
-        // For now, use the conversationId to find the right session
-        const home = process.env.OPENCLAW_HOME || `${process.env.HOME}/.openclaw`;
-        try {
-          // Search all agent session stores for a session matching this channel
-          const { readdirSync } = await import("node:fs");
-          const agentsDir = join(home, "agents");
-          for (const agentId of readdirSync(agentsDir)) {
-            const storePath = join(agentsDir, agentId, "sessions", "sessions.json");
-            try {
-              const store = JSON.parse(readFileSync(storePath, "utf-8"));
-              const key = Object.keys(store).find(k => k.endsWith(`:discord:channel:${rawChId}`));
-              if (key) { sessionKey = key; break; }
-            } catch {}
-          }
-        } catch {}
-      }
-
-      if (sessionKey) {
-        runtime.system.enqueueSystemEvent(
-          `User tapped action block: "${selected}"\nRespond as if the user typed this directly.`,
-          { sessionKey },
-        );
-        runtime.system.requestHeartbeatNow();
-        logger.info(`action-blocks: injected "${selected}" → ${sessionKey}`);
-      } else {
-        logger.warn(`action-blocks: no sessionKey found for ${rawChId}`);
+        logger.warn(`action-blocks: handler error — ${e.stack || e.message}`);
       }
 
       blockState.delete(rawChId);
@@ -184,16 +166,17 @@ async function onAgentEnd(event, ctx, runtime, logger) {
     const options = await predict(ctx, runtime, logger, isMain);
     if (!options?.length) return;
 
-    // Build component spec with callbackData pointing to our interactive handler
-    // Format: "action-blocks:i=N" — core parses namespace "action-blocks", payload "i=N"
+    // Build component spec with callbackData encoding the full label text
+    // Format: "action-blocks:<label>" — core parses namespace "action-blocks", payload "<label>"
+    // callbackData max is 64 chars; namespace + colon = 15 chars, leaving 49 for text
     const spec = {
       reusable: true,
-      blocks: options.map((text, i) => ({
+      blocks: options.map((text) => ({
         type: "actions",
         buttons: [{
           label: text.slice(0, 60),
           style: "secondary",
-          callbackData: `${NAMESPACE}:i=${i}`,
+          callbackData: `${NAMESPACE}:${text.slice(0, 49)}`,
         }],
       })),
     };
