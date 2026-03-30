@@ -1,9 +1,7 @@
 {
   "name": "openclaw-mindsets",
-  "version": "0.1.0",
-  "description": "Multiple AI mindsets, one identity.",
+  "version": "2.0.0",
+  "description": "Multiple agents acting as one. Context-optimized thread orchestration for OpenClaw.",
   "type": "module",
-  "openclaw": {
-    "extensions": ["./index.js"]
-  }
+  "license": "MIT"
 }

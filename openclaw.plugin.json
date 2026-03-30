@@ -1,9 +1,15 @@
 {
   "id": "openclaw-mindsets",
   "name": "OpenClaw Mindsets",
-  "description": "OpenClaw extension for Discord. Multiple agents acting as one.",
+  "description": "Multiple agents acting as one. Thread-based context orchestration.",
   "configSchema": {
     "type": "object",
+    "properties": {
+      "guildId": { "type": "string" },
+      "botId": { "type": "string" },
+      "mainChannelId": { "type": "string" },
+      "mindsets": { "type": "object" }
+    },
     "additionalProperties": false
   },
   "skills": [
