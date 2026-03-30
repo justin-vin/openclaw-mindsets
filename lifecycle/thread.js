@@ -6,9 +6,13 @@
  * to other threads and mindsets.
  */
 
-import { isMainSession } from "../lib/config.js";
+import { isMainSession, listMindsets } from "../lib/config.js";
 
-const THREAD_GROUNDING = `
+function buildThreadGrounding() {
+  const mindsets = listMindsets();
+  const exampleMindset = mindsets[0]?.name || 'infra';
+
+  return `
 # You are a thread
 
 A focused context window within a mindset. You operate autonomously.
@@ -23,7 +27,7 @@ A focused context window within a mindset. You operate autonomously.
 
 ## Identity
 
-One agent, multiple thinking modes. Every mindset is you. Say "I'll handle this in #infra" not "I'll delegate to sysadmin."
+One agent, multiple thinking modes. Every mindset is you. Say "I'll handle this in #${exampleMindset}" not "I'll delegate to ${exampleMindset}."
 
 ## Autonomy
 
@@ -93,6 +97,7 @@ These are HIGH PRIORITY. You MUST:
 
 Never self-close unprompted. User says "done" → brief summary, \`close("self")\`.
 `.trim();
+}
 
 /**
  * Extract the mindset name from a session key.
@@ -114,5 +119,5 @@ export function build(event, ctx, api) {
     ? `\n\n## This thread\n- **Mindset:** ${mindset}\n- **Session:** \`${ctx.sessionKey || 'unknown'}\``
     : '';
 
-  return THREAD_GROUNDING + dynamicContext;
+  return buildThreadGrounding() + dynamicContext;
 }

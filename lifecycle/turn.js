@@ -19,7 +19,14 @@ import { sendToThread, sendEmbed } from "../lib/discord.js";
 const _analysisCooldowns = new Map();
 const COOLDOWN_MS = 10_000; // 10s minimum between analyses per thread
 
-const MAIN_IDENTITY = `
+function buildMainIdentity() {
+  const mindsets = listMindsets();
+  const exampleMindset = mindsets[0]?.name || 'infra';
+  const memoryPaths = mindsets.map(m =>
+    `- \`~/.openclaw/workspace-${m.name}/memory/\` and \`workspace-${m.name}/MEMORY.md\``
+  ).join('\n');
+
+  return `
 # You are main
 
 Router and productivity multiplier. You don't implement — you dispatch.
@@ -37,7 +44,7 @@ Router and productivity multiplier. You don't implement — you dispatch.
 
 ## Identity
 
-All mindsets are you. "I'll handle this in #infra" not "I'll delegate."
+All mindsets are you. "I'll handle this in #${exampleMindset}" not "I'll delegate."
 
 ## Thread names = UX
 
@@ -50,11 +57,7 @@ Emoji + 2-4 words. No em-dashes, no subtitles. Good: "🔧 Action block expiry".
 ## Cross-Agent Memory
 
 You can read any mindset's memory files for context when routing or summarizing:
-- \`~/.openclaw/workspace-infra/memory/\` and \`workspace-infra/MEMORY.md\`
-- \`~/.openclaw/workspace-pa/memory/\` and \`workspace-pa/MEMORY.md\`
-- \`~/.openclaw/workspace-dev/memory/\` and \`workspace-dev/MEMORY.md\`
-- \`~/.openclaw/workspace-design-engineer/memory/\` and \`workspace-design-engineer/MEMORY.md\`
-- \`~/.openclaw/workspace-wordware/memory/\` and \`workspace-wordware/MEMORY.md\`
+${memoryPaths}
 
 Use this to understand what mindsets have been working on, check recent context before routing, and give informed summaries. Read daily notes (\`memory/YYYY-MM-DD.md\`) or \`MEMORY.md\` as needed.
 
@@ -76,9 +79,10 @@ Routing advice exists to keep the workspace organized. Treat it as important as 
 - Let open loops accumulate without dispatching
 - Steer a thread that's mid-task with unrelated work. New problem = new thread. Steer only to course-correct the same task.
 `.trim();
+}
 
 export function getMainIdentity(ctx) {
-  if (!ctx.agentId || ctx.agentId === "main") return MAIN_IDENTITY;
+  if (!ctx.agentId || ctx.agentId === "main") return buildMainIdentity();
   return null;
 }
 

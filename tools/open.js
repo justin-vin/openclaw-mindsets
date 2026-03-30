@@ -6,7 +6,7 @@
  */
 
 import { createThreadViaWebhook, addThreadMember } from "../lib/discord.js";
-import { resolveMindset, getAutoSubscribeIds } from "../lib/config.js";
+import { resolveMindset, getAutoSubscribeIds, listMindsets } from "../lib/config.js";
 
 function buildBootstrap({ prompt, context, done, refs }) {
   // Prompt first, no label — the task IS the message.
@@ -24,7 +24,7 @@ export default function openTool(api) {
     parameters: {
       type: "object",
       properties: {
-        mindset: { type: "string", description: "Mindset name (e.g. 'infra', 'design-engineer')." },
+        mindset: { type: "string", description: `Mindset name (e.g. ${listMindsets().map(m => `'${m.name}'`).join(', ')}).` },
         title: { type: "string", description: "Thread title. 2-4 words max. Minimum viable description." },
         prompt: { type: "string", description: "Bootstrap message. Sets the thread's scope and context." },
         context: { type: "string", description: "Background, prior work, or why this matters. Optional but recommended." },
@@ -46,6 +46,8 @@ export default function openTool(api) {
         const { threadId } = await createThreadViaWebhook(m.webhookUrl, title, bootstrap);
 
         // Auto-subscribe configured users (e.g. Dom)
+        // Delay to avoid Discord race condition — thread needs to propagate before addThreadMember works
+        await new Promise(r => setTimeout(r, 1000));
         for (const uid of getAutoSubscribeIds()) {
           try { await addThreadMember(threadId, uid, logger); }
           catch (e) { logger.warn(`mindsets: failed to subscribe ${uid} to ${threadId}: ${e.message}`); }

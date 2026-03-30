@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from "
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { api as discordApi, sendToThread } from "../lib/discord.js";
-import { getBotId, loadWebhooks, isMainSession } from "../lib/config.js";
+import { getBotId, loadWebhooks, isMainSession, listMindsets } from "../lib/config.js";
 
 const NAMESPACE = "action-blocks";
 const STATE_FILE = join(dirname(new URL(import.meta.url).pathname), "..", ".action-blocks-state.json");
@@ -112,7 +112,7 @@ If the conversation includes a recent routing/housekeeping recommendation (e.g. 
 
 Example: [{"emoji":"🚀","description":"Push the auth service changes to production and verify health checks","action":"Deploy now"},{"emoji":"🤔","description":"What happens when the API returns a 500?","action":"Investigate"},{"emoji":"🧪","description":"Run the full test suite and show coverage numbers","action":"Run tests"}]`;
 
-const MAIN_PROMPT = `You are predicting what the user might want to do next in their main command channel. This is NOT a focused work thread — it's their home base for orchestrating across mindsets (infra, dev, pa, wordware).
+const MAIN_PROMPT = `You are predicting what the user might want to do next in their main command channel. This is NOT a focused work thread — it's their home base for orchestrating across mindsets (${listMindsets().map(m => m.name).join(', ')}).
 
 Suggest a mix of:
 - Proactive actions they might want (check threads, open something new, review status)
