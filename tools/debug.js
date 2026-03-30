@@ -5,7 +5,7 @@
  * Write action: recover (requires explicit target).
  */
 
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, renameSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import * as discord from "../lib/discord.js";
 import { listMindsets, getGuildId, getBotId, getAutoSubscribeIds, loadWebhooks } from "../lib/config.js";
@@ -14,6 +14,8 @@ const OPENCLAW_HOME = process.env.OPENCLAW_HOME || `${process.env.HOME}/.opencla
 const AGENTS_DIR = join(OPENCLAW_HOME, "agents");
 const DELIVERY_QUEUE = join(OPENCLAW_HOME, "delivery-queue");
 const LAUNCH_AGENTS_DIR = `${process.env.HOME}/Library/LaunchAgents`;
+
+const ACTION_BLOCKS_STATE = join(OPENCLAW_HOME, "extensions", "openclaw-mindsets", ".action-blocks-state.json");
 
 const KNOWN_LAUNCH_AGENTS = [
   "ai.openclaw.gateway",
@@ -412,11 +414,148 @@ export default function debugTool(api) {
 
       // ── recover ──────────────────────────────────────────────────
       if (action === "recover") {
-        return json({
-          ok: false,
-          error: "recover not yet implemented — use target: thread ID, 'failed-queue', or 'action-blocks'",
-          hint: "Coming soon. For now, manually clean ~/.openclaw/delivery-queue/failed/",
-        });
+        if (!target) {
+          return json({
+            ok: false,
+            error: "recover requires target: 'failed-queue', 'action-blocks', or a thread ID",
+          });
+        }
+
+        // Mode 1: Move failed delivery queue items to a timestamped archive
+        if (target === "failed-queue") {
+          const failedDir = join(DELIVERY_QUEUE, "failed");
+          if (!existsSync(failedDir)) return json({ ok: true, moved: 0 });
+
+          const files = readdirSync(failedDir).filter(f => f.endsWith(".json"));
+          if (!files.length) return json({ ok: true, moved: 0 });
+
+          // Move to archive dir instead of deleting (recoverable)
+          const archiveDir = join(DELIVERY_QUEUE, `failed-archive-${Date.now()}`);
+          let moved = 0;
+          const errors = [];
+
+          try {
+            mkdirSync(archiveDir, { recursive: true });
+          } catch (e) {
+            return json({ ok: false, error: `Cannot create archive dir: ${e.message.slice(0, 60)}` });
+          }
+
+          for (const f of files) {
+            try {
+              renameSync(join(failedDir, f), join(archiveDir, f));
+              moved++;
+            } catch (e) {
+              errors.push(`${f}: ${e.message.slice(0, 40)}`);
+            }
+          }
+
+          return json({
+            ok: true,
+            moved,
+            archiveDir,
+            errors: errors.length ? errors : undefined,
+          });
+        }
+
+        // Mode 2: Clean stale action block entries (>24h)
+        if (target === "action-blocks") {
+          try {
+            const state = safeReadJson(ACTION_BLOCKS_STATE);
+            if (!state) return json({ ok: false, error: "Cannot read action-blocks state file" });
+
+            const now = Date.now();
+            const TTL = 24 * 60 * 60 * 1000;
+            let cleaned = 0;
+            const before = Object.keys(state).length;
+
+            for (const [channelId, data] of Object.entries(state)) {
+              if (data.savedAt && now - data.savedAt > TTL) {
+                delete state[channelId];
+                cleaned++;
+              }
+            }
+
+            if (cleaned > 0) {
+              writeFileSync(ACTION_BLOCKS_STATE, JSON.stringify(state, null, 2));
+            }
+
+            return json({
+              ok: true,
+              cleaned,
+              before,
+              remaining: Object.keys(state).length,
+            });
+          } catch (e) {
+            return json({ ok: false, error: e.message.slice(0, 100) });
+          }
+        }
+
+        // Mode 3: Re-wake a specific thread by ID
+        if (/^\d{17,20}$/.test(target)) {
+          const mindsets = listMindsets();
+          const guildId = getGuildId();
+          if (!guildId) return json({ ok: false, error: "No guild ID configured" });
+
+          const { threads } = await discord.listActiveThreads(guildId, logger);
+          const thread = (threads || []).find(t => t.id === target);
+
+          if (!thread) {
+            return json({ ok: false, error: `Thread ${target} not found in active threads` });
+          }
+
+          const mindset = mindsets.find(m => m.forumId === thread.parent_id);
+          if (!mindset?.webhookUrl) {
+            return json({ ok: false, error: `No webhook for forum of thread "${thread.name}"` });
+          }
+
+          // Step 1: Resubscribe auto-subscribe users
+          const subIds = getAutoSubscribeIds();
+          let resubscribed = 0;
+          for (const uid of subIds) {
+            try {
+              await discord.addThreadMember(target, uid, logger);
+              resubscribed++;
+            } catch {}
+          }
+
+          // Step 2: Send recovery embed via webhook (triggers agent wake)
+          try {
+            const res = await fetch(`${mindset.webhookUrl}?thread_id=${target}&wait=true`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                content: null,
+                username: "Justin",
+                embeds: [{
+                  description: "🔄 Thread recovery — please check status and resume if needed.",
+                  color: 0xFFA500,
+                }],
+              }),
+            });
+
+            if (!res.ok) {
+              const text = await res.text();
+              return json({
+                ok: false,
+                error: `Webhook failed: ${res.status} ${text.slice(0, 80)}`,
+                resubscribed,
+              });
+            }
+
+            return json({
+              ok: true,
+              action: "re-wake",
+              threadId: target,
+              threadTitle: thread.name,
+              mindset: mindset.name,
+              resubscribed,
+            });
+          } catch (e) {
+            return json({ ok: false, error: `Webhook error: ${e.message.slice(0, 80)}`, resubscribed });
+          }
+        }
+
+        return json({ ok: false, error: `Unknown target: "${target}". Use 'failed-queue', 'action-blocks', or a thread ID.` });
       }
 
       return json({ ok: false, error: `Unknown action: ${action}` });
