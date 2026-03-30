@@ -179,7 +179,7 @@ Context: main channel.
 Mindsets: ${mindsets.map(m => m.name).join(", ")}.
 ${activeThreadsContext}
 Rules:
-- 0-5 active threads per mindset. Over 5 → suggest closing stale ones.
+- Ideal: ~5 active threads per mindset. Up to 10 is fine. Only suggest closing if clearly stale.
 - If the user's message would benefit from a focused thread, suggest opening one in the right mindset.
 - "answer directly" = this message belongs in main AND would NOT benefit from its own thread. Be strict.
 - Multiple actions allowed (open + close in one response).
