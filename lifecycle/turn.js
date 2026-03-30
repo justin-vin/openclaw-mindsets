@@ -13,7 +13,11 @@ import { unlinkSync, readFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { isMainSession, listMindsets, getBotId, loadWebhooks } from "../lib/config.js";
-import { sendToThread } from "../lib/discord.js";
+import { sendToThread, sendEmbed } from "../lib/discord.js";
+
+// Per-thread cooldown to prevent rapid-fire analysis (safety net)
+const _analysisCooldowns = new Map();
+const COOLDOWN_MS = 10_000; // 10s minimum between analyses per thread
 
 const MAIN_IDENTITY = `
 # You are main
@@ -75,21 +79,43 @@ export async function analyze(event, ctx, api) {
   // Guard: skip recursive calls from the analysis fork itself
   if (ctx.sessionId?.startsWith("mindsets-analysis-")) return null;
 
-  // Guard: skip if the inbound is from the dispatch webhook (routing blocks, steers)
-  // Webhook messages have a specific author ID that differs from the bot
-  const promptText = event?.prompt || "";
-  if (ctx.trigger === "webhook" || promptText.includes("📋")) return null;
-
-  // Guard: skip if the sender is the bot or one of our webhooks
+  // Guard: skip if the sender is the bot itself or one of our webhooks
   const senderId = event?.metadata?.senderId || event?.metadata?.sender_id;
   if (senderId) {
     const botId = getBotId();
     if (botId && senderId === botId) return null;
-    // Check if sender is one of our mindset webhooks
     const webhooks = loadWebhooks();
     const webhookIds = new Set(Object.values(webhooks).map(w => w.webhookId).filter(Boolean));
     if (webhookIds.has(senderId)) return null;
   }
+
+  // Guard: skip if trigger is webhook (dispatch messages, routing blocks, steers)
+  if (ctx.trigger === "webhook") return null;
+
+  // Resolve Discord channel ID — extract from session key (agent:<id>:discord:channel:<snowflake>)
+  // ctx.channelId is the plugin name ("discord"), NOT the Discord snowflake.
+  // event.metadata.chat_id may be "channel:<snowflake>" or undefined.
+  let channelId = null;
+  const chatId = event?.metadata?.chat_id;
+  if (chatId && chatId.startsWith("channel:")) {
+    channelId = chatId.replace("channel:", "");
+  }
+  if (!channelId && ctx.sessionKey) {
+    const parts = ctx.sessionKey.split(":");
+    const last = parts[parts.length - 1];
+    if (/^\d{17,20}$/.test(last)) channelId = last;
+  }
+  logger.info(`turn: resolved channelId=${channelId} from sessionKey=${ctx.sessionKey}`);
+
+  // Guard: per-thread cooldown to prevent rapid-fire analysis
+  const threadKey = ctx.sessionKey || channelId || "unknown";
+  const lastAnalysis = _analysisCooldowns.get(threadKey) || 0;
+  const now = Date.now();
+  if (now - lastAnalysis < COOLDOWN_MS) {
+    logger.info(`turn: cooldown active for ${threadKey}, skipping analysis`);
+    return null;
+  }
+  _analysisCooldowns.set(threadKey, now);
 
   // Resolve the current session file by reading the store directly
   let entry;
@@ -176,9 +202,26 @@ Output ONLY the routing decision. No conversation. No greeting. No markdown head
       return null;
     }
 
-    // Routing advice is injected as prependContext — no need to post visibly.
-    // Posting via webhook caused feedback loops (webhook message → new turn → new analysis → repeat).
     if (reply.toLowerCase() === "answer directly") return null;
+
+    // Post routing block visibly as a bot embed (not webhook).
+    // Bot's own messages are natively ignored by OpenClaw — no feedback loop.
+    if (channelId) {
+      logger.info(`turn: posting routing embed to channel=${channelId}`);
+      try {
+        await sendEmbed(channelId, {
+          author: { name: "📋 Routing Analysis" },
+          description: reply,
+          color: 0x5865F2,
+        }, logger);
+        logger.info(`turn: routing embed posted successfully`);
+      } catch (e) {
+        logger.warn(`turn: failed to post routing block to ${channelId} — ${e.message}`);
+      }
+    } else {
+      logger.warn(`turn: no channelId resolved, cannot post routing embed`);
+    }
+
     return `Routing advice: ${reply}`;
   } catch (e) {
     logger.warn("turn: analysis failed", { error: e.message });

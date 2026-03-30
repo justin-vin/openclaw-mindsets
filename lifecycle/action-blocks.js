@@ -15,10 +15,10 @@ import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { api as discordApi } from "../lib/discord.js";
-import { getBotId, loadWebhooks } from "../lib/config.js";
+import { getBotId, loadWebhooks, isMainSession } from "../lib/config.js";
 
 const NAMESPACE = "action-blocks";
-const CUSTOM_ID = `occomp:cid=${NAMESPACE}`;
+const CUSTOM_ID = NAMESPACE;
 
 /** channelId → { messageId, sessionKey } */
 const blockState = new Map();
@@ -26,9 +26,21 @@ const blockState = new Map();
 /** Channels currently generating predictions (prevent concurrent runs) */
 const generating = new Set();
 
-const PREDICTION_PROMPT = `Predict what the user will say next. Output ONLY a JSON array of 3-5 short phrases (max 80 chars each). Be specific to the conversation context — not generic. Include a mix of forward actions and clarifying questions.
+const THREAD_PROMPT = `Predict what the user will say next in this focused work thread. Output ONLY a JSON array of 3-4 short phrases (max 55 chars each). Start each with a relevant emoji. Be specific to the conversation context — not generic. Mix forward actions and clarifying questions.
 
-Example: ["Ship it", "What about error handling?", "Show me the tests", "Try a different approach"]`;
+Example: ["🚀 Ship it", "🤔 What about error handling?", "🧪 Show me the tests", "🔄 Try another approach"]`;
+
+const MAIN_PROMPT = `You are predicting what the user might want to do next in their main command channel. This is NOT a focused work thread — it's their home base for orchestrating across mindsets (infra, dev, pa, wordware).
+
+Suggest a mix of:
+- Proactive actions they might want (check threads, open something new, review status)
+- Vibe checks ("How's everything looking?", "What's stale?")
+- Fresh ideas based on what mindsets could help with
+- Housekeeping (close old threads, check email, calendar)
+
+Output ONLY a JSON array of 3-4 short phrases (max 35 chars each). Start each with a relevant emoji. Be specific and useful, not generic.
+
+Example: ["📋 Board status", "🧹 Close stale threads", "📬 Check my inbox", "💡 What should I work on?"]`;
 
 // ─── Setup ───────────────────────────────────────────────────────────
 
@@ -48,7 +60,7 @@ export function setup(api) {
 
   // 2. Generate action blocks after user-triggered turns
   api.on("agent_end", async (event, ctx) => {
-    logger.info(`action-blocks: agent_end fired — trigger=${ctx.trigger} channel=${ctx.channelId} session=${ctx.sessionKey?.slice(-20)} success=${event.success}`);
+    logger.debug(`action-blocks: agent_end — trigger=${ctx.trigger} channel=${ctx.channelId} success=${event.success}`);
     try {
       await onAgentEnd(event, ctx, runtime, logger);
     } catch (e) {
@@ -56,19 +68,28 @@ export function setup(api) {
     }
   });
 
-  // 3. Interactive handler: user picks an option
+  // 3. Interactive handler: user picks a button
   api.registerInteractiveHandler({
     channel: "discord",
     namespace: NAMESPACE,
     async handler(ctx) {
-      const selected = ctx.interaction.values?.[0];
-      if (!selected) {
-        await ctx.respond.acknowledge();
-        return { handled: true };
-      }
-
+      // Button payload is in ctx.interaction.data (the custom_id suffix)
+      // The button label IS the prediction text
       const chId = ctx.conversationId;
       const entry = blockState.get(chId);
+
+      // Extract selected text from the button label via the message components
+      let selected = null;
+      // Parse index from payload: "i=0", "i=1", etc.
+      const idxMatch = ctx.interaction.payload?.match(/i=(\d+)/);
+      if (idxMatch && entry?.options) {
+        selected = entry.options[parseInt(idxMatch[1])];
+      }
+
+      if (!selected) {
+        // Fallback: use the payload directly
+        selected = ctx.interaction.payload || "continue";
+      }
 
       // Replace component with the selected text
       try {
@@ -102,16 +123,15 @@ export function setup(api) {
 // ─── agent_end hook ──────────────────────────────────────────────────
 
 async function onAgentEnd(event, ctx, runtime, logger) {
-  // Guards with logging
-  if (!ctx.sessionKey) { logger.debug("action-blocks: skip — no sessionKey"); return; }
-  if (ctx.trigger && ctx.trigger !== "user") { logger.debug(`action-blocks: skip — trigger=${ctx.trigger}`); return; }
-  if (ctx.channelId !== "discord") { logger.debug(`action-blocks: skip — channel=${ctx.channelId}`); return; }
-  if (!event.success) { logger.debug("action-blocks: skip — not success"); return; }
-  if (ctx.sessionId?.startsWith("mindsets-") || ctx.sessionId?.startsWith("action-blocks-")) { logger.debug("action-blocks: skip — fork session"); return; }
+  // Guards
+  if (!ctx.sessionKey) return;
+  if (ctx.trigger && ctx.trigger !== "user") return;
+  if (ctx.channelId !== "discord") return;
+  if (!event.success) return;
+  if (ctx.sessionId?.startsWith("mindsets-") || ctx.sessionId?.startsWith("action-blocks-")) return;
 
   const chId = extractDiscordChannelId(ctx.sessionKey);
-  if (!chId) { logger.info(`action-blocks: skip — no channel ID from key=${ctx.sessionKey}`); return; }
-  logger.info(`action-blocks: proceeding for channel=${chId} session=${ctx.sessionKey}`);
+  if (!chId) return;
 
   // Prevent concurrent generation
   if (generating.has(chId)) return;
@@ -122,51 +142,35 @@ async function onAgentEnd(event, ctx, runtime, logger) {
     await deleteBlock(chId, logger);
 
     // Predict follow-ups
-    logger.info(`action-blocks: starting prediction…`);
-    const options = await predict(ctx, runtime, logger);
-    if (!options?.length) {
-      logger.info(`action-blocks: no predictions returned`);
-      return;
-    }
+    const isMain = !ctx.agentId || ctx.agentId === "main";
+    logger.debug(`action-blocks: predicting (${isMain ? "main" : "thread"})`);
+    const options = await predict(ctx, runtime, logger, isMain);
+    if (!options?.length) return;
 
-    logger.info(`action-blocks: got ${options.length} predictions: ${JSON.stringify(options)}`);
+    // Post as inline buttons — 1 per row for mobile readability (labels wrap to 2 lines)
+    const buttons = options.map((text, i) => ({
+      type: 2, // Button
+      style: 2, // Secondary (grey)
+      label: text.slice(0, 60),
+      custom_id: `${CUSTOM_ID}:i=${i}`,
+    }));
 
-    // Post select component
+    // 1 button per row — full width, allows label text to wrap on mobile
+    const rows = buttons.map((btn) => ({ type: 1, components: [btn] }));
+
     const msg = await discordApi(
       "POST",
       `/channels/${chId}/messages`,
-      {
-        content: "",
-        components: [
-          {
-            type: 1, // ActionRow
-            components: [
-              {
-                type: 3, // StringSelect
-                custom_id: CUSTOM_ID,
-                placeholder: "Continue the conversation…",
-                min_values: 1,
-                max_values: 1,
-                options: options.map((text) => ({
-                  label: text.slice(0, 100),
-                  value: text.slice(0, 100),
-                })),
-              },
-            ],
-          },
-        ],
-      },
+      { content: "", components: rows },
       logger,
     );
 
     if (msg?.id) {
-      blockState.set(chId, { messageId: msg.id, sessionKey: ctx.sessionKey });
-      logger.info(`action-blocks: posted ${options.length} options → ${chId} msg=${msg.id}`);
-    } else {
-      logger.warn(`action-blocks: post returned no message id`);
+      blockState.set(chId, { messageId: msg.id, sessionKey: ctx.sessionKey, options });
+      logger.info(`action-blocks: ${options.length} buttons → ${chId}`);
     }
   } catch (e) {
-    logger.warn(`action-blocks: post failed — ${e.message}\n${e.stack}`);
+    logger.warn(`action-blocks: failed — ${e.message}`);
   } finally {
     generating.delete(chId);
   }
@@ -174,21 +178,16 @@ async function onAgentEnd(event, ctx, runtime, logger) {
 
 // ─── Prediction ──────────────────────────────────────────────────────
 
-async function predict(ctx, runtime, logger) {
+async function predict(ctx, runtime, logger, isMain = false) {
   // 1. Extract last few messages from session file
   let recentMessages;
   try {
     const agentId = ctx.agentId || "main";
     const home = process.env.OPENCLAW_HOME || `${process.env.HOME}/.openclaw`;
     const storePath = join(home, "agents", agentId, "sessions", "sessions.json");
-    logger.info(`action-blocks: reading store — agent=${agentId} path=${storePath}`);
     const store = JSON.parse(readFileSync(storePath, "utf-8"));
     const entry = store?.[ctx.sessionKey];
-    if (!entry?.sessionFile) {
-      logger.info(`action-blocks: no session file for key=${ctx.sessionKey}`);
-      return null;
-    }
-    logger.info(`action-blocks: session file=${entry.sessionFile}`);
+    if (!entry?.sessionFile) return null;
     recentMessages = extractRecentMessages(entry.sessionFile, 6);
   } catch (e) {
     logger.warn(`action-blocks: session read — ${e.message}`);
@@ -212,12 +211,12 @@ async function predict(ctx, runtime, logger) {
       sessionId: `action-blocks-${Date.now()}`,
       sessionFile: tempFile,
       workspaceDir: ctx.workspaceDir || runtime.agent.resolveAgentWorkspaceDir(ctx.agentId || "main"),
-      prompt: `Recent conversation:\n${context}\n\n${PREDICTION_PROMPT}`,
+      prompt: `Recent conversation:\n${context}\n\n${isMain ? MAIN_PROMPT : THREAD_PROMPT}`,
       disableTools: true,
       timeoutMs: 12_000,
       runId: randomUUID(),
       extraSystemPrompt:
-        "Output ONLY a JSON array of predicted user follow-ups. No markdown fences, no explanation, no preamble.",
+        "Output ONLY a JSON array of 3-4 predicted user follow-ups. Each must start with a relevant emoji and be max 35 chars. No markdown fences, no explanation, no preamble.",
     });
 
     const text = result?.payloads?.[0]?.text?.trim();
@@ -235,8 +234,8 @@ async function predict(ctx, runtime, logger) {
 
     return arr
       .filter((s) => typeof s === "string" && s.trim())
-      .map((s) => s.trim().slice(0, 80))
-      .slice(0, 5);
+      .map((s) => s.trim().slice(0, 35))
+      .slice(0, 4);
   } catch (e) {
     logger.debug(`action-blocks: predict failed — ${e.message}`);
     return null;
@@ -258,13 +257,15 @@ function extractRecentMessages(sessionFile, count) {
     for (let i = lines.length - 1; i >= 0 && msgs.length < count; i--) {
       try {
         const entry = JSON.parse(lines[i]);
-        if (entry.role !== "user" && entry.role !== "assistant") continue;
+        // Session files use {type:"message", message:{role,content}} wrappers
+        const msg = entry.message || entry;
+        if (msg.role !== "user" && msg.role !== "assistant") continue;
 
         let text = "";
-        if (typeof entry.content === "string") {
-          text = entry.content;
-        } else if (Array.isArray(entry.content)) {
-          text = entry.content
+        if (typeof msg.content === "string") {
+          text = msg.content;
+        } else if (Array.isArray(msg.content)) {
+          text = msg.content
             .filter((c) => c.type === "text")
             .map((c) => c.text || "")
             .join("\n");
@@ -272,8 +273,10 @@ function extractRecentMessages(sessionFile, count) {
 
         text = text.trim();
         if (!text || text === "HEARTBEAT_OK" || text === "NO_REPLY") continue;
+        // Skip tool-only messages (no readable text)
+        if (text.length < 5) continue;
 
-        msgs.unshift({ role: entry.role, text: text.slice(0, 500) });
+        msgs.unshift({ role: msg.role, text: text.slice(0, 500) });
       } catch {}
     }
 
