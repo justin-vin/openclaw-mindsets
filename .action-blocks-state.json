@@ -1,0 +1,67 @@
+{
+  "1487118150356173072": {
+    "entries": [
+      {
+        "id": "btn_8dcgQoif",
+        "kind": "button",
+        "label": "✅ Rename those dev threads",
+        "callbackData": "action-blocks:✅ Rename those dev threads",
+        "sessionKey": "agent:main:discord:channel:1487118150356173072",
+        "agentId": "main",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488180759331209336",
+        "createdAt": 1774880342240,
+        "expiresAt": 1774882142240
+      },
+      {
+        "id": "btn_AvdRbdim",
+        "kind": "button",
+        "label": "📋 Full board status",
+        "callbackData": "action-blocks:📋 Full board status",
+        "sessionKey": "agent:main:discord:channel:1487118150356173072",
+        "agentId": "main",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488180759331209336",
+        "createdAt": 1774880342240,
+        "expiresAt": 1774882142240
+      },
+      {
+        "id": "btn_IvyOPO1u",
+        "kind": "button",
+        "label": "📬 Check email & calendar",
+        "callbackData": "action-blocks:📬 Check email & calendar",
+        "sessionKey": "agent:main:discord:channel:1487118150356173072",
+        "agentId": "main",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488180759331209336",
+        "createdAt": 1774880342240,
+        "expiresAt": 1774882142240
+      },
+      {
+        "id": "btn_uoRowGsf",
+        "kind": "button",
+        "label": "🧹 Close anything stale",
+        "callbackData": "action-blocks:🧹 Close anything stale",
+        "sessionKey": "agent:main:discord:channel:1487118150356173072",
+        "agentId": "main",
+        "accountId": "default",
+        "reusable": true,
+        "messageId": "1488180759331209336",
+        "createdAt": 1774880342240,
+        "expiresAt": 1774882142240
+      }
+    ],
+    "options": [
+      "✅ Rename those dev threads",
+      "📋 Full board status",
+      "📬 Check email & calendar",
+      "🧹 Close anything stale"
+    ],
+    "sessionKey": "agent:main:discord:channel:1487118150356173072",
+    "messageId": "1488180759331209336",
+    "savedAt": 1774880342244
+  }
+}

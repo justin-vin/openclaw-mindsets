@@ -1,27 +1,88 @@
 /**
  * lifecycle/action-blocks.js — Post-turn action block predictions.
  *
- * After each user-triggered agent turn, extract recent messages, run a
- * lightweight embedded agent to predict 3-4 likely follow-ups, and post
- * them as Discord component buttons via OpenClaw's built-in component
- * system. Buttons use callbackData to route clicks through the plugin's
- * interactive handler, which posts the selected text visibly and injects
- * it into the agent session.
+ * After each user-triggered agent turn, predict 3-4 likely follow-ups
+ * and post them as Discord component buttons. Clicking a button deletes
+ * the buttons, posts the selected text as a quote, and sends it via
+ * webhook to trigger an agent turn.
+ *
+ * Buttons survive gateway restarts by persisting component entries to
+ * disk and re-registering them on plugin setup.
  *
  * Hooks: message_received (cleanup), agent_end (generate).
  * Interactive handler: namespace "action-blocks".
  */
 
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { api as discordApi, sendToThread } from "../lib/discord.js";
 import { getBotId, loadWebhooks, isMainSession } from "../lib/config.js";
 
 const NAMESPACE = "action-blocks";
+const STATE_FILE = join(dirname(new URL(import.meta.url).pathname), "..", ".action-blocks-state.json");
 
-// Lazy-loaded from OpenClaw core on first use
+// ─── Component Entry Persistence ─────────────────────────────────────
+
+/** Access the global component entries map (shared with OpenClaw core) */
+function getComponentEntriesMap() {
+  const key = Symbol.for("openclaw.discord.componentEntries");
+  return globalThis[key] || null;
+}
+
+/** Save component entries to disk so they survive restarts */
+function saveState(state) {
+  try {
+    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  } catch {}
+}
+
+/** Load persisted state from disk */
+function loadState() {
+  try {
+    if (!existsSync(STATE_FILE)) return {};
+    return JSON.parse(readFileSync(STATE_FILE, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+/** Re-register persisted component entries into the global map */
+function restoreComponentEntries(logger) {
+  const map = getComponentEntriesMap();
+  if (!map) {
+    logger.warn("action-blocks: component entries map not available yet");
+    return;
+  }
+
+  const state = loadState();
+  let restored = 0;
+  const now = Date.now();
+  const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+  for (const [channelId, data] of Object.entries(state)) {
+    if (!data?.entries) continue;
+    // Skip entries older than 24h
+    if (data.savedAt && now - data.savedAt > TTL_MS) continue;
+
+    for (const entry of data.entries) {
+      // Re-insert with fresh timestamps
+      map.set(entry.id, {
+        ...entry,
+        createdAt: now,
+        expiresAt: now + TTL_MS,
+      });
+      restored++;
+    }
+  }
+
+  if (restored > 0) {
+    logger.info(`action-blocks: restored ${restored} component entries from disk`);
+  }
+}
+
+// Lazy-loaded from OpenClaw core
 let sendDiscordComponentMessage;
 let _coreImportAttempted = false;
 
@@ -38,7 +99,7 @@ async function getSendDiscordComponentMessage() {
 /** channelId → { messageId, sessionKey, options } */
 const blockState = new Map();
 
-/** Channels currently generating predictions (prevent concurrent runs) */
+/** Channels currently generating predictions */
 const generating = new Set();
 
 const THREAD_PROMPT = `Predict what the user will say next in this focused work thread. Output ONLY a JSON array of 3-4 short phrases (max 55 chars each). Start each with a relevant emoji. Be specific to the conversation context — not generic. Mix forward actions and clarifying questions.
@@ -63,19 +124,19 @@ export function setup(api) {
   const logger = api.logger;
   const runtime = api.runtime;
 
-  // 1. Immediate cleanup when a new inbound message arrives
+  // Restore persisted component entries so old buttons still work
+  restoreComponentEntries(logger);
+
+  // 1. Cleanup when a new inbound message arrives
   api.on("message_received", async (event, ctx) => {
     if (ctx.channelId !== "discord") return;
     const chId = ctx.conversationId;
     if (!chId || !blockState.has(chId)) return;
-
-    logger.debug(`action-blocks: message_received cleanup for ${chId}`);
     await deleteBlock(chId, logger);
   });
 
   // 2. Generate action blocks after user-triggered turns
   api.on("agent_end", async (event, ctx) => {
-    logger.debug(`action-blocks: agent_end — trigger=${ctx.trigger} channel=${ctx.channelId} success=${event.success}`);
     try {
       await onAgentEnd(event, ctx, runtime, logger);
     } catch (e) {
@@ -84,61 +145,59 @@ export function setup(api) {
   });
 
   // 3. Interactive handler: user picks a button
-  //    callbackData routes here BEFORE core posts "✓"
-  const handlerResult = api.registerInteractiveHandler({
+  api.registerInteractiveHandler({
     channel: "discord",
     namespace: NAMESPACE,
     async handler(ctx) {
-      logger.info(`action-blocks: HANDLER FIRED — payload=${ctx.interaction?.payload} conv=${ctx.conversationId} data=${JSON.stringify(ctx.interaction?.data)?.slice(0,200)}`);
-      // conversationId may be "channel:123" or just "123"
+      logger.info(`action-blocks: HANDLER FIRED — payload=${ctx.interaction?.payload} conv=${ctx.conversationId}`);
       const rawChId = ctx.conversationId?.replace(/^channel:/, "");
-      const entry = blockState.get(rawChId);
 
-      // The payload IS the label text (encoded in callbackData as "action-blocks:<text>")
-      let selected = ctx.interaction.payload?.trim() || null;
+      // Payload IS the label text (encoded as "action-blocks:<text>")
+      let selected = ctx.interaction.payload?.trim() || "continue";
+      // Strip index-only fallback
+      if (/^i=\d+$/.test(selected)) selected = "continue";
 
-      // Fallback to blockState options by index (legacy compat)
-      if (!selected || selected.match(/^i=\d+$/)) {
-        const idxMatch = (selected || "").match(/i=(\d+)/);
-        if (idxMatch && entry?.options) {
-          selected = entry.options[parseInt(idxMatch[1])];
-        }
-      }
-      if (!selected) {
-        selected = "continue";
-      }
+      logger.info(`action-blocks: selected="${selected}"`);
 
-      logger.info(`action-blocks: selected="${selected}" hasEntry=${!!entry} sessionKey=${entry?.sessionKey}`);
-
-      logger.info(`action-blocks: about to process tap`);
       try {
-        // Delete the button message and post selected text
+        // Delete button message + post quote
         const msgId = ctx.interaction?.messageId;
         if (msgId && rawChId) {
-          logger.info(`action-blocks: deleting msg ${msgId} in ${rawChId}`);
           await discordApi("DELETE", `/channels/${rawChId}/messages/${msgId}`, null, logger);
-          logger.info(`action-blocks: posting quote`);
           await discordApi("POST", `/channels/${rawChId}/messages`, { content: `> ${selected}` }, logger);
         }
+      } catch (e) {
+        logger.warn(`action-blocks: visual cleanup failed — ${e.message}`);
+      }
 
-        // Send via webhook to trigger agent turn
-        logger.info(`action-blocks: sending webhook`);
+      // Send via webhook to trigger agent turn
+      try {
         const webhooks = loadWebhooks();
         if (webhooks?.length && rawChId) {
           const sent = await sendToThread(selected, rawChId, webhooks, { header: "Action Block" });
-          logger.info(`action-blocks: webhook sent=${sent}`);
+          logger.info(`action-blocks: webhook sent=${sent} → ${rawChId}`);
         } else {
           logger.warn(`action-blocks: no webhooks for ${rawChId}`);
         }
       } catch (e) {
-        logger.warn(`action-blocks: handler error — ${e.stack || e.message}`);
+        logger.warn(`action-blocks: webhook error — ${e.message}`);
       }
 
+      // Clean up in-memory state
       blockState.delete(rawChId);
+
+      // Remove from persisted state
+      try {
+        const state = loadState();
+        if (state[rawChId]) {
+          delete state[rawChId];
+          saveState(state);
+        }
+      } catch {}
+
       return { handled: true };
     },
   });
-  logger.info(`action-blocks: interactive handler registered — ok=${handlerResult?.ok} error=${handlerResult?.error}`);
 
   logger.info("action-blocks: setup complete");
 }
@@ -162,13 +221,10 @@ async function onAgentEnd(event, ctx, runtime, logger) {
     await deleteBlock(chId, logger);
 
     const isMain = !ctx.agentId || ctx.agentId === "main";
-    logger.debug(`action-blocks: predicting (${isMain ? "main" : "thread"})`);
     const options = await predict(ctx, runtime, logger, isMain);
     if (!options?.length) return;
 
-    // Build component spec with callbackData encoding the full label text
-    // Format: "action-blocks:<label>" — core parses namespace "action-blocks", payload "<label>"
-    // callbackData max is 64 chars; namespace + colon = 15 chars, leaving 49 for text
+    // Build spec with callbackData encoding the label text
     const spec = {
       reusable: true,
       blocks: options.map((text) => ({
@@ -181,24 +237,53 @@ async function onAgentEnd(event, ctx, runtime, logger) {
       })),
     };
 
-    logger.info(`action-blocks: spec callbackData=${spec.blocks?.[0]?.buttons?.[0]?.callbackData}`);
     const sendFn = await getSendDiscordComponentMessage();
-    logger.info(`action-blocks: sendFn=${typeof sendFn} name=${sendFn?.name}`);
-    if (sendFn) {
-      try {
-        const result = await sendFn(`channel:${chId}`, spec, {
-          sessionKey: ctx.sessionKey,
-          agentId: ctx.agentId,
-        });
-        if (result?.messageId) {
-          blockState.set(chId, { messageId: result.messageId, sessionKey: ctx.sessionKey, options });
-          logger.info(`action-blocks: ${options.length} buttons → ${chId}`);
+    if (!sendFn) {
+      logger.warn("action-blocks: sendDiscordComponentMessage not available");
+      return;
+    }
+
+    try {
+      const result = await sendFn(`channel:${chId}`, spec, {
+        sessionKey: ctx.sessionKey,
+        agentId: ctx.agentId,
+      });
+
+      if (result?.messageId) {
+        blockState.set(chId, { messageId: result.messageId, sessionKey: ctx.sessionKey, options });
+        logger.info(`action-blocks: ${options.length} buttons → ${chId}`);
+
+        // Persist component entries for restart survival
+        try {
+          const map = getComponentEntriesMap();
+          if (map) {
+            // Find entries we just registered (they'll have our sessionKey)
+            const entries = [];
+            for (const [id, entry] of map.entries()) {
+              if (entry.sessionKey === ctx.sessionKey && entry.callbackData?.startsWith(NAMESPACE + ":")) {
+                entries.push({ ...entry, id });
+              }
+            }
+
+            if (entries.length > 0) {
+              const state = loadState();
+              state[chId] = {
+                entries,
+                options,
+                sessionKey: ctx.sessionKey,
+                messageId: result.messageId,
+                savedAt: Date.now(),
+              };
+              saveState(state);
+              logger.info(`action-blocks: persisted ${entries.length} entries for ${chId}`);
+            }
+          }
+        } catch (e) {
+          logger.debug(`action-blocks: persist error — ${e.message}`);
         }
-      } catch (e) {
-        logger.warn(`action-blocks: component send failed — ${e.message}`);
       }
-    } else {
-      logger.warn("action-blocks: sendDiscordComponentMessage not available (import failed)");
+    } catch (e) {
+      logger.warn(`action-blocks: component send failed — ${e.message}`);
     }
   } catch (e) {
     logger.warn(`action-blocks: failed — ${e.message}`);
@@ -250,10 +335,7 @@ async function predict(ctx, runtime, logger, isMain = false) {
     if (!text) return null;
 
     const match = text.match(/\[[\s\S]*?\]/);
-    if (!match) {
-      logger.debug(`action-blocks: no JSON — "${text.slice(0, 120)}"`);
-      return null;
-    }
+    if (!match) return null;
 
     const arr = JSON.parse(match[0]);
     if (!Array.isArray(arr)) return null;
@@ -277,31 +359,20 @@ function extractRecentMessages(sessionFile, count) {
     const content = readFileSync(sessionFile, "utf-8");
     const lines = content.trim().split("\n").filter(Boolean);
     const msgs = [];
-
     for (let i = lines.length - 1; i >= 0 && msgs.length < count; i--) {
       try {
         const entry = JSON.parse(lines[i]);
         const msg = entry.message || entry;
         if (msg.role !== "user" && msg.role !== "assistant") continue;
-
         let text = "";
-        if (typeof msg.content === "string") {
-          text = msg.content;
-        } else if (Array.isArray(msg.content)) {
-          text = msg.content
-            .filter((c) => c.type === "text")
-            .map((c) => c.text || "")
-            .join("\n");
-        }
-
+        if (typeof msg.content === "string") text = msg.content;
+        else if (Array.isArray(msg.content))
+          text = msg.content.filter((c) => c.type === "text").map((c) => c.text || "").join("\n");
         text = text.trim();
-        if (!text || text === "HEARTBEAT_OK" || text === "NO_REPLY") continue;
-        if (text.length < 5) continue;
-
+        if (!text || text === "HEARTBEAT_OK" || text === "NO_REPLY" || text.length < 5) continue;
         msgs.unshift({ role: msg.role, text: text.slice(0, 500) });
       } catch {}
     }
-
     return msgs;
   } catch {
     return [];
@@ -316,7 +387,6 @@ function extractDiscordChannelId(sessionKey) {
 async function deleteBlock(channelId, logger) {
   const entry = blockState.get(channelId);
   if (!entry?.messageId) return;
-
   try {
     await discordApi("DELETE", `/channels/${channelId}/messages/${entry.messageId}`, null, logger);
   } catch (e) {
