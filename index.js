@@ -44,9 +44,14 @@ export default {
       if (mainId) result.prependSystemContext = mainId;
       else if (grounding) result.prependSystemContext = grounding;
 
-      // Per-turn analysis
+      // Per-turn analysis (returns { appendSystemContext: ... } or null)
       const advice = await turnLifecycle.analyze(event, ctx, api);
-      if (advice) result.prependContext = advice;
+      if (advice && typeof advice === "object") {
+        Object.assign(result, advice);
+      } else if (typeof advice === "string") {
+        // Legacy string fallback
+        result.appendSystemContext = (result.appendSystemContext ? result.appendSystemContext + "\n\n" : "") + advice;
+      }
 
       return Object.keys(result).length ? result : undefined;
     });

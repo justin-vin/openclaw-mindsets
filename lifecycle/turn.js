@@ -229,7 +229,7 @@ IMPORTANT: Your output is shown to the user as a standalone footer. They cannot 
       logger.warn(`turn: no channelId resolved, cannot post routing embed`);
     }
 
-    return `Routing advice: ${reply}`;
+    return { appendSystemContext: `## Routing Advice (internal — do not echo this to the user)\n${reply}` };
   } catch (e) {
     logger.warn("turn: analysis failed", { error: e.message });
     return null;
