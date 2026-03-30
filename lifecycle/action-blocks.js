@@ -108,6 +108,7 @@ const THREAD_PROMPT = `Predict what the user will say next in this focused work 
 - "action": short verb label for the button (max 20 chars)
 
 Be specific to the conversation context — not generic. Mix forward actions and clarifying questions.
+If the conversation includes a recent routing/housekeeping recommendation (e.g. close a thread, rename, open new thread), include a button to help act on it.
 
 Example: [{"emoji":"🚀","description":"Push the auth service changes to production and verify health checks","action":"Deploy now"},{"emoji":"🤔","description":"What happens when the API returns a 500?","action":"Investigate"},{"emoji":"🧪","description":"Run the full test suite and show coverage numbers","action":"Run tests"}]`;
 
@@ -123,6 +124,8 @@ Output ONLY a JSON array of 2-3 objects (vary the count naturally), each with:
 - "emoji": a relevant emoji
 - "description": what the user would say or want done (30-100 chars, one clear sentence)
 - "action": short verb label for the button (max 20 chars)
+
+If the conversation includes a recent routing/housekeeping recommendation (e.g. close stale threads, open new thread), include a button to help act on it.
 
 Example: [{"emoji":"📋","description":"Check all active threads across mindsets and see what's stale","action":"Show board"},{"emoji":"📬","description":"Scan for unread emails that need attention today","action":"Check email"}]`;
 
