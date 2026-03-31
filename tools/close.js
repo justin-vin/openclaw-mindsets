@@ -1,10 +1,14 @@
 /**
- * close — Archive + lock a thread.
+ * close — Queue a thread for archive + lock (deferred to agent_end).
+ *
+ * The actual archive happens in the agent_end hook (index.js) AFTER
+ * all messages have been sent, preventing Discord auto-unarchive.
  */
 
-import * as discord from "../lib/discord.js";
 import { getAutoSubscribeIds } from "../lib/config.js";
-import { getCurrentChannelId } from "../lib/session-context.js";
+import { getCurrentChannelId, getCurrentAgentId, getCurrentSessionKey } from "../lib/session-context.js";
+import { queueClose } from "../lib/pending-close.js";
+import * as discord from "../lib/discord.js";
 
 export default function closeTool(api) {
   return {
@@ -19,11 +23,15 @@ export default function closeTool(api) {
     async execute(_id, { threadId } = {}) {
       let target = threadId;
       if (!target || target === "self") {
-        // Note: execute() does NOT receive session ctx as 3rd arg (it's AbortSignal).
-        // We read the channel ID from the shared session-context store instead,
-        // which is populated by the before_prompt_build hook each turn.
-        target = getCurrentChannelId();
-        if (!target) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Cannot resolve current thread — no session context available" }) }] };
+        const agentId = getCurrentAgentId();
+        target = getCurrentChannelId(agentId);
+        if (!target) {
+          return { content: [{ type: "text", text: JSON.stringify({
+            ok: false,
+            error: "Cannot resolve current thread — no session context available. Pass threadId explicitly.",
+            hint: "Use status() to find thread IDs"
+          }) }] };
+        }
       }
 
       try {
@@ -32,10 +40,21 @@ export default function closeTool(api) {
           try { await discord.removeThreadMember(target, uid, api.logger); }
           catch {}
         }
-        await discord.archiveThread(target, api.logger);
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, threadId: target }) }] };
+
+        // Queue for deferred archive (agent_end hook will execute it)
+        const sessionKey = getCurrentSessionKey();
+        if (sessionKey) {
+          queueClose(sessionKey, target);
+          api.logger.info(`close: queued deferred archive for thread ${target} (session: ${sessionKey})`);
+        } else {
+          // Fallback: archive immediately if no session context (shouldn't happen)
+          api.logger.warn(`close: no session context, archiving thread ${target} immediately`);
+          await discord.archiveThread(target, api.logger);
+        }
+
+        return { content: [{ type: "text", text: JSON.stringify({ ok: true, threadId: target, deferred: !!sessionKey }) }] };
       } catch (e) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: e.message, threadId: target }) }] };
       }
     },
   };

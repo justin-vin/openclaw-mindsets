@@ -15,6 +15,8 @@ import * as threadLifecycle from "./lifecycle/thread.js";
 import * as turnLifecycle from "./lifecycle/turn.js";
 import * as actionBlocks from "./lifecycle/action-blocks.js";
 import { setSessionContext } from "./lib/session-context.js";
+import { drainPending } from "./lib/pending-close.js";
+import * as discord from "./lib/discord.js";
 
 export default {
   id: "openclaw-mindsets",
@@ -56,9 +58,23 @@ export default {
       return Object.keys(result).length ? result : undefined;
     });
 
+    // Deferred close: archive threads AFTER agent finishes sending messages
+    api.on("agent_end", async (_event, ctx) => {
+      if (!ctx?.sessionKey) return;
+      const pending = drainPending(ctx.sessionKey);
+      for (const threadId of pending) {
+        try {
+          await discord.archiveThread(threadId, api.logger);
+          api.logger.info(`agent_end: archived thread ${threadId}`);
+        } catch (e) {
+          api.logger.warn(`agent_end: failed to archive thread ${threadId}: ${e.message}`);
+        }
+      }
+    });
+
     // Post-turn action blocks
     actionBlocks.setup(api);
 
-    api.logger.info("mindsets v2: registered 6 tools + 2 hooks + action-blocks");
+    api.logger.info("mindsets v2: registered 6 tools + 3 hooks + action-blocks");
   },
 };
