@@ -30,8 +30,12 @@ Close a thread. No threadId or "self" = close yourself. Pass threadId = close th
 ### `update`(threadId?, title?, steer?)
 Rename or redirect a thread. `title` = rename. `steer` = inject a message via webhook.
 
-### `mindsets`(action, name?)
-List or inspect mindsets. `action: "list"` shows all. `action: "inspect"` + `name` for details.
+### `mindsets`(action, name?, description?, newName?, newDescription?, confirm?)
+Manage mindsets. Actions:
+- `list` — shows all mindsets
+- `inspect` + `name` — details for one mindset
+- `create` + `name` + `description` — creates a new mindset (Discord forum, webhook, agent config, workspace, gateway restart). Name must be lowercase-hyphenated.
+- `reframe` + `name` + `newName` + `newDescription?` — renames/rescopes a mindset across everything. **Two-phase:** first call (without `confirm`) returns current vs proposed state for you to evaluate adjacency. Only call with `confirm: true` if the new domain is a natural evolution of the old one (e.g. dev→design-engineer ✅, dev→cookery ❌). The memory and context would be too disoriented if the domains are unrelated.
 
 ### `debug`(action)
 System introspection: health, zombies, sessions, cost, recovery.

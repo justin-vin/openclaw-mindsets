@@ -13,6 +13,10 @@
       "displayName": {
         "type": "string",
         "description": "Name shown on webhook posts (thread creation, action blocks, recovery). Defaults to main agent name or 'Mindsets'."
+      },
+      "categoryId": {
+        "type": "string",
+        "description": "Discord category ID where new mindset forum channels are created."
       }
     },
     "additionalProperties": false
