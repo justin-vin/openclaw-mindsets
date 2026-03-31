@@ -20,6 +20,17 @@ import { tmpdir } from "node:os";
 import { api as discordApi, sendToThread } from "../lib/discord.js";
 import { getBotId, loadWebhooks, isMainSession, listMindsets } from "../lib/config.js";
 
+// Import system event dispatch + heartbeat wake from OpenClaw core
+let _enqueueSystemEvent, _requestHeartbeatNow;
+try {
+  const core = await import("/opt/homebrew/lib/node_modules/openclaw/dist/system-events-D_U3rn_H.js");
+  _enqueueSystemEvent = core.r; // enqueueSystemEvent
+  const piCore = await import("/opt/homebrew/lib/node_modules/openclaw/dist/pi-embedded-BaSvmUpW.js");
+  _requestHeartbeatNow = piCore.pv; // requestHeartbeatNow
+} catch (e) {
+  // Fallback: will use runtime.system if available
+}
+
 const NAMESPACE = "action-blocks";
 const STATE_FILE = join(dirname(new URL(import.meta.url).pathname), "..", ".action-blocks-state.json");
 
@@ -277,18 +288,21 @@ export function setup(api) {
       const memState = blockState.get(rawChId);
       const perState = loadState()[rawChId];
       const sessionKey = memState?.sessionKey || perState?.sessionKey;
-      if (sessionKey && _runtime?.system?.enqueueSystemEvent) {
+      if (sessionKey && _enqueueSystemEvent) {
         try {
-          _runtime.system.enqueueSystemEvent(
+          _enqueueSystemEvent(
             `[Action block selected by user] ${selected}`,
             { sessionKey }
           );
-          logger.info(`action-blocks: dispatched system event → ${sessionKey}`);
+          if (_requestHeartbeatNow) {
+            _requestHeartbeatNow({ reason: `action-blocks:click`, sessionKey });
+          }
+          logger.info(`action-blocks: dispatched system event + heartbeat wake → ${sessionKey}`);
         } catch (e) {
           logger.warn(`action-blocks: system event dispatch failed — ${e.message}`);
         }
       } else {
-        logger.warn(`action-blocks: no sessionKey or runtime for dispatch (sessionKey=${sessionKey})`);
+        logger.warn(`action-blocks: no sessionKey (${sessionKey}) or enqueueSystemEvent not available`);
       }
 
       // Clean up in-memory state
