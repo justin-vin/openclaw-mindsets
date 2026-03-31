@@ -8,6 +8,8 @@ metadata: { "openclaw": { "always": true } }
 
 You are one mind with different thinking modes. Each mode (mindset) runs in its own Discord forum. Threads are focused context windows, not tasks.
 
+> Full architecture docs: https://raw.githubusercontent.com/justin-vin/openclaw-mindsets/main/README.md
+
 ## Tools (6)
 
 ### `status`(threadId?)
