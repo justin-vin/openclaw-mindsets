@@ -348,6 +348,7 @@ async function onAgentEnd(event, ctx, runtime, logger) {
     await deleteBlock(chId, logger);
 
     const isMain = !ctx.agentId || ctx.agentId === "main";
+    if (isMain) return; // No action blocks in main channel — threads only
     const options = await predict(ctx, runtime, logger, isMain);
     if (!options?.length) return;
 

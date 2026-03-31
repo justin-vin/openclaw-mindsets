@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# openclaw-mindsets — run file
+# Clones the extension and prints setup guide for the agent.
+set -euo pipefail
+
+REPO="https://github.com/justin-vin/openclaw-mindsets.git"
+DEST="${OPENCLAW_DIR:-$HOME/.openclaw}/extensions/openclaw-mindsets"
+DRY_RUN="${DRY_RUN:-}"
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+  esac
+done
+
+# ── Check prerequisites ──────────────────────────────────────────────
+if ! command -v git &>/dev/null; then
+  echo "ERROR: git is not installed."
+  exit 1
+fi
+
+# ── Already installed? ───────────────────────────────────────────────
+if [ -d "$DEST" ] && [ -f "$DEST/openclaw.plugin.json" ]; then
+  echo "⚠️  openclaw-mindsets is already installed at $DEST"
+  echo ""
+  echo "To reinstall fresh, the user must manually remove it first:"
+  echo "  rm -rf $DEST"
+  echo ""
+  echo "Then re-run this script. Do NOT remove it without the user's explicit consent."
+  exit 0
+fi
+
+# ── Install ──────────────────────────────────────────────────────────
+if [ -n "$DRY_RUN" ]; then
+  echo "[dry-run] Would clone $REPO to $DEST"
+else
+  echo "Installing openclaw-mindsets..."
+  mkdir -p "$(dirname "$DEST")"
+  git clone "$REPO" "$DEST" 2>&1
+fi
+
+echo ""
+echo "✅ openclaw-mindsets installed at $DEST"
+echo ""
+
+# ── Post-install guide (agent reads this) ────────────────────────────
+cat <<'GUIDE'
+--- OPENCLAW-MINDSETS INSTALLED ---
+
+## Setup Guide
+
+Complete these steps to finish configuration:
+
+### 1. Discord Plugin
+Verify the Discord channel plugin is configured. Required settings:
+- Bot token set
+- Guild ID configured  
+- `allowBots: true` (needed for webhook-based thread communication)
+- Webhook IDs added to guild users allowlist (added per-mindset later)
+
+Check: `cat ~/.openclaw/openclaw.json | grep -A 20 discord`
+
+### 2. Gateway Restart
+Run: `openclaw gateway restart`
+The extension is auto-discovered from ~/.openclaw/extensions/.
+
+### 3. Mindset Setup
+Now ask the user what mindsets they want. Good mindsets are:
+- **Domain-scoped** — a thinking mode, not a task (e.g. "dev" not "fix-bug")
+- **Context-distinct** — benefits from isolated context window
+- **Personality-rich** — has a clear thinking style and communication approach
+
+Examples:
+- `dev` — building software, prototyping, technical specs
+- `infra` — ops, security, networking, deployment  
+- `pa` — life admin, scheduling, comms, errands
+- `design-engineer` — UI/UX, design systems, visual craft
+
+For each mindset, you'll need to:
+1. Create a Discord forum channel (e.g. #dev, #infra)
+2. Create a webhook in that forum for dispatch
+3. Add the webhook ID to the Discord guild users allowlist
+4. Configure the mindset in the extension config
+
+### 4. Alternative: Auto-Suggest
+Instead of asking, read the user's MEMORY.md and SOUL.md to understand 
+their work and suggest 3-5 mindsets with descriptions. Let them pick.
+
+--- END GUIDE ---
+GUIDE

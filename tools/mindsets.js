@@ -4,7 +4,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { listMindsets, resolveMindset, loadWebhooks, getGuildId, getAutoSubscribeIds } from "../lib/config.js";
+import { listMindsets, resolveMindset, loadWebhooks, getGuildId, getAutoSubscribeIds, getDisplayName } from "../lib/config.js";
 import { api as discordApi, renameThread } from "../lib/discord.js";
 
 const OPENCLAW_HOME = process.env.OPENCLAW_HOME || `${process.env.HOME}/.openclaw`;
@@ -119,7 +119,7 @@ async function createMindset({ name, description }, logger) {
     }
 
     // 2. Create webhook on the forum
-    const wh = await discordApi("POST", `/channels/${forumId}/webhooks`, { name: "Justin" }, logger);
+    const wh = await discordApi("POST", `/channels/${forumId}/webhooks`, { name: getDisplayName() }, logger);
     webhookId = wh.id;
     webhookToken = wh.token;
     if (!webhookId || !webhookToken) throw new Error("Webhook created but missing ID/token.");

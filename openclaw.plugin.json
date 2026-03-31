@@ -17,6 +17,10 @@
       "categoryId": {
         "type": "string",
         "description": "Discord category ID where new mindset forum channels are created."
+      },
+      "show_housekeeping": {
+        "type": "boolean",
+        "description": "Whether to post visible housekeeping/routing embeds in Discord. Analysis still runs and injects as context regardless. Default: false."
       }
     },
     "additionalProperties": false

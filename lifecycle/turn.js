@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { unlinkSync, readFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { isMainSession, listMindsets, getBotId, loadWebhooks } from "../lib/config.js";
+import { isMainSession, listMindsets, getBotId, loadWebhooks, getShowHousekeeping } from "../lib/config.js";
 import { sendToThread, sendEmbed } from "../lib/discord.js";
 
 // Per-thread cooldown to prevent rapid-fire analysis (safety net)
@@ -263,8 +263,8 @@ Output routing bullets or "answer directly". Nothing else.`;
     }
 
     if (reply.toLowerCase() === "answer directly") {
-      // Post green "on track" embed for visibility
-      if (channelId) {
+      // Post green "on track" embed for visibility (only if show_housekeeping enabled)
+      if (channelId && getShowHousekeeping()) {
         const onTrackText = isMain ? "✅ Workspace organized" : "✅ Thread on track";
         try {
           await sendEmbed(channelId, { footer: { text: onTrackText } }, logger);
@@ -278,7 +278,8 @@ Output routing bullets or "answer directly". Nothing else.`;
 
     // Post routing block visibly as a ghost embed (footer-only, no color, no emoji).
     // Bot's own messages are natively ignored by OpenClaw — no feedback loop.
-    if (channelId) {
+    // Only post if show_housekeeping is enabled in plugin config.
+    if (channelId && getShowHousekeeping()) {
       logger.info(`turn: posting routing embed to channel=${channelId}`);
       try {
         // Compact: strip bullet prefixes, join with " · ", prepend header
