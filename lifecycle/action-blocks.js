@@ -14,11 +14,47 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { api as discordApi, sendToThread } from "../lib/discord.js";
 import { getBotId, loadWebhooks, isMainSession, listMindsets } from "../lib/config.js";
+
+// ─── Dynamic OpenClaw Path Resolution ────────────────────────────────
+
+/** Find the openclaw package's dist directory at runtime. */
+function findOpenClawDistDir() {
+  // Method 1: package resolution (works when openclaw is on the require path)
+  try {
+    const req = createRequire(import.meta.url);
+    const pkgPath = req.resolve("openclaw/package.json");
+    return join(dirname(pkgPath), "dist");
+  } catch {}
+
+  // Method 2: trace back from the openclaw binary (works for global installs)
+  try {
+    const bin = execFileSync("which", ["openclaw"], { encoding: "utf-8", timeout: 3000 }).trim();
+    const real = realpathSync(bin);
+    // e.g. /opt/homebrew/lib/node_modules/openclaw/bin/openclaw.js -> dist is two levels up then dist
+    return join(real, "..", "..", "dist");
+  } catch {}
+
+  return null;
+}
+
+/** Find a dist file by base-name prefix (handles hash-suffixed filenames). */
+function findOpenClawFile(prefix) {
+  const distDir = findOpenClawDistDir();
+  if (!distDir) return null;
+  try {
+    const files = readdirSync(distDir);
+    const match = files.find(f => f.startsWith(prefix + "-") && f.endsWith(".js"));
+    return match ? join(distDir, match) : null;
+  } catch {}
+  return null;
+}
 
 // Lazy-loaded system event dispatch from OpenClaw core
 let _enqueueSystemEvent, _requestHeartbeatNow;
@@ -28,10 +64,16 @@ async function loadCoreImports() {
   if (_coreImportsAttempted) return;
   _coreImportsAttempted = true;
   try {
-    const core = await import("/opt/homebrew/lib/node_modules/openclaw/dist/system-events-D_U3rn_H.js");
-    _enqueueSystemEvent = core.r; // enqueueSystemEvent
-    const piCore = await import("/opt/homebrew/lib/node_modules/openclaw/dist/pi-embedded-BaSvmUpW.js");
-    _requestHeartbeatNow = piCore.pv; // requestHeartbeatNow
+    const sysEventsPath = findOpenClawFile("system-events");
+    if (sysEventsPath) {
+      const core = await import(sysEventsPath);
+      _enqueueSystemEvent = core.r; // enqueueSystemEvent
+    }
+    const piPath = findOpenClawFile("pi-embedded");
+    if (piPath) {
+      const piCore = await import(piPath);
+      _requestHeartbeatNow = piCore.pv; // requestHeartbeatNow
+    }
   } catch {}
 }
 
@@ -105,8 +147,11 @@ async function getSendDiscordComponentMessage() {
   if (_coreImportAttempted) return sendDiscordComponentMessage;
   _coreImportAttempted = true;
   try {
-    const core = await import("/opt/homebrew/lib/node_modules/openclaw/dist/pi-embedded-BaSvmUpW.js");
-    sendDiscordComponentMessage = core.In;
+    const piPath = findOpenClawFile("pi-embedded");
+    if (piPath) {
+      const core = await import(piPath);
+      sendDiscordComponentMessage = core.In;
+    }
   } catch {}
   return sendDiscordComponentMessage;
 }

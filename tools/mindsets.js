@@ -51,17 +51,24 @@ function seedWorkspace(workspace, name, description) {
 
   const titleName = name.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 
+  const displayName = getDisplayName();
   const files = {
     "SOUL.md": `# Mindset: ${titleName}\n\n${description}\n`,
     "IDENTITY.md": [
       `# IDENTITY.md — ${titleName}\n`,
-      `- **Name:** Justin (${titleName} mindset)`,
+      `- **Name:** ${displayName} (${titleName} mindset)`,
       `- **Role:** ${description.split(".")[0]}`,
       `- **Mindset ID:** \`${name}\``,
-      `- **Part of:** Justin HQ — a mindset of Justin, not a separate agent\n`,
+      `- **Part of:** ${displayName} — a mindset, not a separate agent\n`,
     ].join("\n"),
-    "AGENTS.md": readFileSync(join(OPENCLAW_HOME, "workspace-infra", "AGENTS.md"), "utf-8"),
-    "USER.md": readFileSync(join(OPENCLAW_HOME, "workspace-infra", "USER.md"), "utf-8"),
+    "AGENTS.md": (() => {
+      try { return readFileSync(join(OPENCLAW_HOME, "workspace-infra", "AGENTS.md"), "utf-8"); }
+      catch { return `# AGENTS.md\n\nNo agent guidelines configured yet.\n`; }
+    })(),
+    "USER.md": (() => {
+      try { return readFileSync(join(OPENCLAW_HOME, "workspace-infra", "USER.md"), "utf-8"); }
+      catch { return `# USER.md\n\nNo user profile configured yet.\n`; }
+    })(),
     "MEMORY.md": `# MEMORY.md — ${titleName}\n\nFreshly created mindset. No memories yet.\n`,
     "HEARTBEAT.md": `# HEARTBEAT.md — ${titleName}\n\nNo heartbeat tasks configured. Reply HEARTBEAT_OK.\n`,
   };
