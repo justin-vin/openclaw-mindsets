@@ -20,15 +20,19 @@ import { tmpdir } from "node:os";
 import { api as discordApi, sendToThread } from "../lib/discord.js";
 import { getBotId, loadWebhooks, isMainSession, listMindsets } from "../lib/config.js";
 
-// Import system event dispatch + heartbeat wake from OpenClaw core
+// Lazy-loaded system event dispatch from OpenClaw core
 let _enqueueSystemEvent, _requestHeartbeatNow;
-try {
-  const core = await import("/opt/homebrew/lib/node_modules/openclaw/dist/system-events-D_U3rn_H.js");
-  _enqueueSystemEvent = core.r; // enqueueSystemEvent
-  const piCore = await import("/opt/homebrew/lib/node_modules/openclaw/dist/pi-embedded-BaSvmUpW.js");
-  _requestHeartbeatNow = piCore.pv; // requestHeartbeatNow
-} catch (e) {
-  // Fallback: will use runtime.system if available
+let _coreImportsAttempted = false;
+
+async function loadCoreImports() {
+  if (_coreImportsAttempted) return;
+  _coreImportsAttempted = true;
+  try {
+    const core = await import("/opt/homebrew/lib/node_modules/openclaw/dist/system-events-D_U3rn_H.js");
+    _enqueueSystemEvent = core.r; // enqueueSystemEvent
+    const piCore = await import("/opt/homebrew/lib/node_modules/openclaw/dist/pi-embedded-BaSvmUpW.js");
+    _requestHeartbeatNow = piCore.pv; // requestHeartbeatNow
+  } catch {}
 }
 
 const NAMESPACE = "action-blocks";
@@ -285,6 +289,7 @@ export function setup(api) {
 
       // Dispatch as system event to trigger agent turn
       // (webhook messages are ignored by OpenClaw's inbound pipeline)
+      await loadCoreImports();
       const memState = blockState.get(rawChId);
       const perState = loadState()[rawChId];
       const sessionKey = memState?.sessionKey || perState?.sessionKey;
