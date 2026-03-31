@@ -192,7 +192,7 @@ Two primitives. Nothing else works — see "Why everything else failed" below.
 For opening new threads. Single webhook POST with `thread_name` creates the forum thread and posts the bootstrap as the opening message — all from the dispatch identity.
 
 ```js
-await discord.webhookPost(webhookUrl, null, null, "Justin", null, {
+await discord.webhookPost(webhookUrl, null, null, "Agent", null, {
   thread_name: title,
   wait: true,
   embeds: [{ author: { name: "Thread Opened" }, description: bootstrap, color: 0x57F287 }],
@@ -210,7 +210,7 @@ For all subsequent messages to threads. One HTTP POST.
 ```bash
 curl -X POST "<webhookUrl>?thread_id=<threadId>" \
   -H "Content-Type: application/json" \
-  -d '{"content": "<@BOT_ID> <message>", "username": "Justin", "avatar_url": "<avatar>"}'
+  -d '{"content": "<@BOT_ID> <message>", "username": "Agent", "avatar_url": "<avatar>"}'
 ```
 
 The webhook posts as a different Discord user identity (`author.id` ≠ bot's user ID). OpenClaw's self-filter passes it. With `allowBots: true` and the webhook ID in the guild users allowlist, the message is processed as a normal inbound. The agent responds through standard Discord session delivery.
@@ -260,7 +260,7 @@ const wh = await discord.createWebhook(forumId, { name: 'Justin Dispatch' });
 // One call: webhook creates thread, posts bootstrap as embed from dispatch identity.
 // Dispatch identity passes self-filter → OpenClaw processes as inbound → agent wakes.
 // Agent reads embed content via OpenClaw extraction. No bot mention needed.
-const result = await discord.webhookPost(webhookUrl, null, null, "Justin", null, {
+const result = await discord.webhookPost(webhookUrl, null, null, "Agent", null, {
   thread_name: title,
   wait: true,  // returns thread ID
   embeds: [{ author: { name: "Thread Opened" }, description: bootstrap, color: 0x57F287 }],
@@ -274,7 +274,7 @@ const threadId = result.channel_id;
 await fetch(`${webhookUrl}?thread_id=${threadId}`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ content: `<@${BOT_ID}> ${message}`, username: 'Justin', avatar_url: AVATAR })
+  body: JSON.stringify({ content: `<@${BOT_ID}> ${message}`, username: 'Agent', avatar_url: AVATAR })
 });
 ```
 

@@ -9,6 +9,10 @@
         "type": "array",
         "items": { "type": "string" },
         "description": "Discord user IDs to auto-add to every new thread."
+      },
+      "displayName": {
+        "type": "string",
+        "description": "Name shown on webhook posts (thread creation, action blocks, recovery). Defaults to main agent name or 'Mindsets'."
       }
     },
     "additionalProperties": false

@@ -8,7 +8,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, renameSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import * as discord from "../lib/discord.js";
-import { listMindsets, getGuildId, getBotId, getAutoSubscribeIds, loadWebhooks } from "../lib/config.js";
+import { listMindsets, getGuildId, getBotId, getAutoSubscribeIds, loadWebhooks, getDisplayName } from "../lib/config.js";
 
 const OPENCLAW_HOME = process.env.OPENCLAW_HOME || `${process.env.HOME}/.openclaw`;
 const AGENTS_DIR = join(OPENCLAW_HOME, "agents");
@@ -20,7 +20,6 @@ const ACTION_BLOCKS_STATE = join(OPENCLAW_HOME, "extensions", "openclaw-mindsets
 const KNOWN_LAUNCH_AGENTS = [
   "ai.openclaw.gateway",
   "ai.openclaw.mac",
-  "com.justin.openclaw-backup",
 ];
 
 const ZOMBIE_NO_RESPONSE_MS = 15 * 60 * 1000;   // 15min
@@ -525,7 +524,7 @@ export default function debugTool(api) {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 content: null,
-                username: "Justin",
+                username: getDisplayName(),
                 embeds: [{
                   description: "🔄 Thread recovery — please check status and resume if needed.",
                   color: 0xFFA500,
